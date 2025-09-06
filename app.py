@@ -1,35 +1,60 @@
 from flask import Flask, request, jsonify
-import time, hmac, hashlib, requests, os
+import time, base64, hmac, hashlib, requests, json
+import os
 
 app = Flask(__name__)
 
-API_KEY = os.environ.get("BINGX_API_KEY")
-SECRET_KEY = os.environ.get("BINGX_SECRET_KEY")
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+API_KEY = os.environ.get("KUCOIN_FUTURES_API_KEY")
+API_SECRET = os.environ.get("KUCOIN_FUTURES_API_SECRET")
+API_PASSPHRASE = os.environ.get("KUCOIN_FUTURES_API_PASSPHRASE")
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
 
-BINGX_API_URL = "https://open-api.bingx.com/openApi/swap/v2/trade/order"
+BASE_URL = "https://api-futures.kucoin.com"
 
-def generate_signature(query_string, secret_key):
-    return hmac.new(secret_key.encode(), query_string.encode(), hashlib.sha256).hexdigest()
+def get_headers(method, endpoint, body=""):
+    now = str(int(time.time() * 1000))
+    str_to_sign = now + method + endpoint + body
+    signature = base64.b64encode(
+        hmac.new(API_SECRET.encode(), str_to_sign.encode(), hashlib.sha256).digest()
+    ).decode()
+
+    passphrase = base64.b64encode(
+        hmac.new(API_SECRET.encode(), API_PASSPHRASE.encode(), hashlib.sha256).digest()
+    ).decode()
+
+    return {
+        "KC-API-KEY": API_KEY,
+        "KC-API-SIGN": signature,
+        "KC-API-TIMESTAMP": now,
+        "KC-API-PASSPHRASE": passphrase,
+        "KC-API-KEY-VERSION": "2",
+        "Content-Type": "application/json"
+    }
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.get_json()
-    if WEBHOOK_SECRET and data.get("auth") != WEBHOOK_SECRET:
+
+    if data.get("auth") != WEBHOOK_SECRET:
         return jsonify({"error": "Unauthorized"}), 401
-    if 'action' not in data or 'symbol' not in data:
-        return jsonify({"error": "Missing required fields"}), 400
 
-    symbol = data['symbol']
-    side = "BUY" if data['action'] == "buy" else "SELL"
-    quantity = str(data.get("quantity", 0.01))
-    leverage = str(data.get("leverage", 5))
+    side = data["action"].upper()      # BUY or SELL
+    symbol = data["symbol"]            # ex: ETHUSDM
+    leverage = data.get("leverage", 5)
+    size = data.get("quantity", 1)     # contract size
 
-    timestamp = str(int(time.time() * 1000))
-    params = f"timestamp={timestamp}&symbol={symbol}&side={side}&positionSide=BOTH&orderType=MARKET&quantity={quantity}&leverage={leverage}"
-    signature = generate_signature(params, SECRET_KEY)
-    headers = {"X-BX-APIKEY": API_KEY}
-    url = f"{BINGX_API_URL}?{params}&signature={signature}"
+    endpoint = "/api/v1/orders"
+    url = BASE_URL + endpoint
 
-    resp = requests.post(url, headers=headers)
-    return jsonify(resp.json())
+    body = {
+        "symbol": symbol,
+        "side": side,
+        "leverage": leverage,
+        "type": "market",
+        "size": size
+    }
+
+    headers = get_headers("POST", endpoint, json.dumps(body))
+    response = requests.post(url, headers=headers, data=json.dumps(body))
+
+    return jsonify(response.json())
