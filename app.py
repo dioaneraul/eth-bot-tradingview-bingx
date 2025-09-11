@@ -41,13 +41,29 @@ def webhook():
 
         side = data.get("action").upper()      # BUY sau SELL
         symbol = data.get("symbol")            # ex. ETHUSDTM
-        qty = str(data.get("quantity"))        # dimensiune poziție
         leverage = str(data.get("leverage", 5))
         price = data.get("price")
         tp = data.get("tp")
         sl = data.get("sl")
 
-        print(f"Placing order -> {side} {symbol}, qty={qty}, lev={leverage}, TP={tp}, SL={sl}", flush=True)
+        # ======================
+        # Conversie în contracte
+        # ======================
+        contracts_per_coin = {
+            "ETHUSDTM": 0.01,   # 1 contract = 0.01 ETH
+            "XBTUSDTM": 0.001,  # 1 contract = 0.001 BTC
+            "SOLUSDTM": 1,      # 1 contract = 1 SOL
+            "ADAUSDTM": 10,     # 1 contract = 10 ADA
+            "XRPUSDTM": 10,     # 1 contract = 10 XRP
+            "DOGEUSDTM": 100,   # 1 contract = 100 DOGE
+            "PAXGUSDTM": 0.01,  # 1 contract = 0.01 PAXG
+        }
+
+        qty_input = float(data.get("quantity"))  # ce trimiți tu (în monede)
+        contract_size = contracts_per_coin.get(symbol, 1)  # fallback = 1
+        qty = int(qty_input / contract_size)  # conversie în contracte (integer)
+
+        print(f"Placing order -> {side} {symbol}, qty_input={qty_input}, contracts={qty}, lev={leverage}, TP={tp}, SL={sl}", flush=True)
 
         # 1. Setează leverage
         endpoint_lev = f"/api/v1/position/setLeverage"
@@ -105,7 +121,7 @@ def webhook():
             "status": "executed",
             "symbol": symbol,
             "side": side,
-            "qty": qty,
+            "contracts": qty,
             "tp": tp,
             "sl": sl
         })
