@@ -120,7 +120,8 @@ def webhook():
                     "stop": "up" if side == "BUY" else "down",
                     "stopPrice": str(tp),
                     "price": str(tp),
-                    "reduceOnly": True
+                    "reduceOnly": True,
+                    "closeOrder": True
                 }
                 headers = get_headers("POST", endpoint_oco, json.dumps(tp_body))
                 res_tp = requests.post(BASE_URL + endpoint_oco, headers=headers, data=json.dumps(tp_body))
@@ -136,7 +137,8 @@ def webhook():
                     "stop": "down" if side == "BUY" else "up",
                     "stopPrice": str(sl),
                     "price": str(sl),
-                    "reduceOnly": True
+                    "reduceOnly": True,
+                    "closeOrder": True
                 }
                 headers = get_headers("POST", endpoint_oco, json.dumps(sl_body))
                 res_sl = requests.post(BASE_URL + endpoint_oco, headers=headers, data=json.dumps(sl_body))
