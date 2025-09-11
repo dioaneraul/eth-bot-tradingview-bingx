@@ -1,10 +1,9 @@
 from flask import Flask, request, jsonify
-import time, base64, hmac, hashlib, requests, json
-import os
+import time, base64, hmac, hashlib, requests, json, os, traceback
 
 app = Flask(__name__)
 
-# ---- CHEI API (din .env sau variabile Render) ----
+# Variabile din Environment (Render)
 API_KEY = os.environ.get("KUCOIN_FUTURES_API_KEY")
 API_SECRET = os.environ.get("KUCOIN_FUTURES_API_SECRET")
 API_PASSPHRASE = os.environ.get("KUCOIN_FUTURES_API_PASSPHRASE")
@@ -12,91 +11,109 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
 
 BASE_URL = "https://api-futures.kucoin.com"
 
-
-# ---- HEADERE PENTRU AUTENTIFICARE KUCOIN ----
 def get_headers(method, endpoint, body=""):
     now = str(int(time.time() * 1000))
-    str_to_sign = now + method + endpoint + body
+    str_to_sign = now + method.upper() + endpoint + body
     signature = base64.b64encode(
         hmac.new(API_SECRET.encode(), str_to_sign.encode(), hashlib.sha256).digest()
-    ).decode()
-
+    )
     passphrase = base64.b64encode(
         hmac.new(API_SECRET.encode(), API_PASSPHRASE.encode(), hashlib.sha256).digest()
-    ).decode()
+    )
 
     return {
         "KC-API-KEY": API_KEY,
-        "KC-API-SIGN": signature,
+        "KC-API-SIGN": signature.decode(),
         "KC-API-TIMESTAMP": now,
-        "KC-API-PASSPHRASE": passphrase,
+        "KC-API-PASSPHRASE": passphrase.decode(),
         "KC-API-KEY-VERSION": "2",
         "Content-Type": "application/json"
     }
 
-
-# ---- PRIMIRE ALERTĂ WEBHOOK DE LA TRADINGVIEW ----
-@app.route("/webhook", methods=["POST"])
+@app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.get_json()
+    try:
+        data = request.get_json()
+        print("Webhook received:", data, flush=True)
 
-    if data.get("auth") != WEBHOOK_SECRET:
-        return jsonify({"error": "Unauthorized"}), 401
+        if data.get("auth") != WEBHOOK_SECRET:
+            return jsonify({"error": "Unauthorized"}), 401
 
-    side = data.get("action", "").upper()  # BUY / SELL
-    symbol = data.get("symbol")
-    leverage = data.get("leverage", 5)
-    size = data.get("quantity", 1)
-    price = data.get("price")
-    sl = data.get("sl")
-    tp = data.get("tp")
+        side = data.get("action").upper()      # BUY sau SELL
+        symbol = data.get("symbol")            # ex. ETHUSDTM
+        qty = str(data.get("quantity"))        # dimensiune poziție
+        leverage = str(data.get("leverage", 5))
+        price = data.get("price")
+        tp = data.get("tp")
+        sl = data.get("sl")
 
-    if None in [side, symbol, size, price, sl, tp]:
-        return jsonify({"error": "Missing required fields"}), 400
+        print(f"Placing order -> {side} {symbol}, qty={qty}, lev={leverage}, TP={tp}, SL={sl}", flush=True)
 
-    headers = get_headers("POST", "/api/v1/orders")
-    endpoint = "/api/v1/orders"
+        # 1. Setează leverage
+        endpoint_lev = f"/api/v1/position/setLeverage"
+        lev_body = {"symbol": symbol, "leverage": leverage}
+        headers = get_headers("POST", endpoint_lev, json.dumps(lev_body))
+        res_lev = requests.post(BASE_URL + endpoint_lev, headers=headers, data=json.dumps(lev_body))
+        print("Leverage response:", res_lev.text, flush=True)
 
-    # 1️⃣ MARKET ENTRY ORDER
-    entry_order = {
-        "symbol": symbol,
-        "side": side.lower(),  # buy / sell
-        "type": "market",
-        "leverage": leverage,
-        "size": size
-    }
-    r_entry = requests.post(BASE_URL + endpoint, headers=headers, json=entry_order)
+        # 2. Creează ordin principal (market)
+        endpoint_order = "/api/v1/orders"
+        order_body = {
+            "symbol": symbol,
+            "side": side,
+            "type": "market",
+            "size": qty,
+            "leverage": leverage
+        }
+        headers = get_headers("POST", endpoint_order, json.dumps(order_body))
+        res_order = requests.post(BASE_URL + endpoint_order, headers=headers, data=json.dumps(order_body))
+        print("Order response:", res_order.text, flush=True)
 
-    if r_entry.status_code != 200:
-        return jsonify({"error": "Entry failed", "details": r_entry.text}), 500
+        order_id = None
+        try:
+            order_id = res_order.json().get("data", {}).get("orderId")
+        except:
+            pass
 
-    # 2️⃣ TAKE PROFIT ORDER (LIMIT)
-    tp_order = {
-        "symbol": symbol,
-        "side": "sell" if side.lower() == "buy" else "buy",
-        "type": "limit",
-        "price": tp,
-        "size": size,
-        "reduceOnly": True
-    }
-    r_tp = requests.post(BASE_URL + endpoint, headers=headers, json=tp_order)
+        # 3. Adaugă TP și SL dacă există
+        if order_id and (tp or sl):
+            endpoint_oco = "/api/v1/stopOrders"
+            stop_body = {
+                "symbol": symbol,
+                "side": "sell" if side == "BUY" else "buy",  # invers pentru exit
+                "type": "limit",
+                "size": qty,
+                "reduceOnly": True
+            }
+            if tp:
+                stop_body["stopPrice"] = str(tp)
+                stop_body["price"] = str(tp)
+                stop_body["stop"] = "up" if side == "BUY" else "down"
+                headers = get_headers("POST", endpoint_oco, json.dumps(stop_body))
+                res_tp = requests.post(BASE_URL + endpoint_oco, headers=headers, data=json.dumps(stop_body))
+                print("TP response:", res_tp.text, flush=True)
 
-    # 3️⃣ STOP LOSS ORDER (STOP-MARKET)
-    sl_order = {
-        "symbol": symbol,
-        "side": "sell" if side.lower() == "buy" else "buy",
-        "type": "market",
-        "stop": "down" if side.lower() == "buy" else "up",
-        "stopPrice": sl,
-        "reduceOnly": True,
-        "size": size
-    }
-    r_sl = requests.post(BASE_URL + endpoint, headers=headers, json=sl_order)
+            if sl:
+                stop_body["stopPrice"] = str(sl)
+                stop_body["price"] = str(sl)
+                stop_body["stop"] = "down" if side == "BUY" else "up"
+                headers = get_headers("POST", endpoint_oco, json.dumps(stop_body))
+                res_sl = requests.post(BASE_URL + endpoint_oco, headers=headers, data=json.dumps(stop_body))
+                print("SL response:", res_sl.text, flush=True)
 
-    return jsonify({
-        "status": "executed",
-        "entry": r_entry.json(),
-        "tp": r_tp.json(),
-        "sl": r_sl.json()
-    })
+        return jsonify({
+            "status": "executed",
+            "symbol": symbol,
+            "side": side,
+            "qty": qty,
+            "tp": tp,
+            "sl": sl
+        })
 
+    except Exception as e:
+        print("ERROR:", str(e), flush=True)
+        print(traceback.format_exc(), flush=True)
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=10000)
