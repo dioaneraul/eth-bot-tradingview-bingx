@@ -98,51 +98,41 @@ def webhook():
         res_order = requests.post(BASE_URL + endpoint_order, headers=headers, data=json.dumps(order_body))
         print("Order response:", res_order.text, flush=True)
 
-        order_id = None
-        try:
-            order_id = res_order.json().get("data", {}).get("orderId")
-        except:
-            pass
-
         # ======================
         # 3. Adaugă TP și SL dacă există
         # ======================
-        if order_id and (tp or sl):
-            endpoint_oco = "/api/v1/stopOrders"
+        if tp:
+            tp_body = {
+                "clientOid": str(uuid.uuid4()),
+                "symbol": symbol,
+                "side": "sell" if side == "BUY" else "buy",
+                "type": "limit",
+                "size": qty,
+                "stop": "up" if side == "BUY" else "down",
+                "stopPrice": str(tp),
+                "price": str(tp),
+                "reduceOnly": True,
+                "closeOrder": True
+            }
+            headers = get_headers("POST", endpoint_order, json.dumps(tp_body))
+            res_tp = requests.post(BASE_URL + endpoint_order, headers=headers, data=json.dumps(tp_body))
+            print("TP response:", res_tp.text, flush=True)
 
-            if tp:
-                tp_body = {
-                    "clientOid": str(uuid.uuid4()),
-                    "symbol": symbol,
-                    "side": "sell" if side == "BUY" else "buy",
-                    "type": "limit",
-                    "size": qty,
-                    "stop": "up" if side == "BUY" else "down",
-                    "stopPrice": str(tp),
-                    "price": str(tp),
-                    "reduceOnly": True,
-                    "closeOrder": True
-                }
-                headers = get_headers("POST", endpoint_oco, json.dumps(tp_body))
-                res_tp = requests.post(BASE_URL + endpoint_oco, headers=headers, data=json.dumps(tp_body))
-                print("TP response:", res_tp.text, flush=True)
-
-            if sl:
-                sl_body = {
-                    "clientOid": str(uuid.uuid4()),
-                    "symbol": symbol,
-                    "side": "sell" if side == "BUY" else "buy",
-                    "type": "limit",
-                    "size": qty,
-                    "stop": "down" if side == "BUY" else "up",
-                    "stopPrice": str(sl),
-                    "price": str(sl),
-                    "reduceOnly": True,
-                    "closeOrder": True
-                }
-                headers = get_headers("POST", endpoint_oco, json.dumps(sl_body))
-                res_sl = requests.post(BASE_URL + endpoint_oco, headers=headers, data=json.dumps(sl_body))
-                print("SL response:", res_sl.text, flush=True)
+        if sl:
+            sl_body = {
+                "clientOid": str(uuid.uuid4()),
+                "symbol": symbol,
+                "side": "sell" if side == "BUY" else "buy",
+                "type": "market",
+                "size": qty,
+                "stop": "down" if side == "BUY" else "up",
+                "stopPrice": str(sl),
+                "reduceOnly": True,
+                "closeOrder": True
+            }
+            headers = get_headers("POST", endpoint_order, json.dumps(sl_body))
+            res_sl = requests.post(BASE_URL + endpoint_order, headers=headers, data=json.dumps(sl_body))
+            print("SL response:", res_sl.text, flush=True)
 
         return jsonify({
             "status": "executed",
