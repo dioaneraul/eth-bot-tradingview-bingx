@@ -1,10 +1,10 @@
 from flask import Flask, request, jsonify
-import time, base64, hmac, hashlib, requests, json, os, traceback, uuid
+import time, base64, hmac, hashlib, requests, json, os, uuid
 
 app = Flask(__name__)
 
 # ======================
-# Variabile din Environment (Render)
+# 1. Config din variabile de mediu
 # ======================
 API_KEY = os.environ.get("KUCOIN_FUTURES_API_KEY")
 API_SECRET = os.environ.get("KUCOIN_FUTURES_API_SECRET")
@@ -13,145 +13,119 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
 
 BASE_URL = "https://api-futures.kucoin.com"
 
+
 # ======================
-# Headers pentru KuCoin
+# 2. Funcție headers pentru semnătură
 # ======================
 def get_headers(method, endpoint, body=""):
-    now = str(int(time.time() * 1000))
-    str_to_sign = now + method.upper() + endpoint + body
+    now = int(time.time() * 1000)
+    str_to_sign = str(now) + method.upper() + endpoint + body
     signature = base64.b64encode(
         hmac.new(API_SECRET.encode(), str_to_sign.encode(), hashlib.sha256).digest()
-    )
+    ).decode()
+
     passphrase = base64.b64encode(
         hmac.new(API_SECRET.encode(), API_PASSPHRASE.encode(), hashlib.sha256).digest()
-    )
+    ).decode()
 
     return {
         "KC-API-KEY": API_KEY,
-        "KC-API-SIGN": signature.decode(),
-        "KC-API-TIMESTAMP": now,
-        "KC-API-PASSPHRASE": passphrase.decode(),
+        "KC-API-SIGN": signature,
+        "KC-API-TIMESTAMP": str(now),
+        "KC-API-PASSPHRASE": passphrase,
         "KC-API-KEY-VERSION": "2",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
 
+
 # ======================
-# Endpoint Webhook
+# 3. Webhook TradingView
 # ======================
-@app.route('/webhook', methods=['POST'])
+@app.route("/webhook", methods=["POST"])
 def webhook():
-    try:
-        data = request.get_json()
-        print("Webhook received:", data, flush=True)
+    data = request.get_json()
 
-        if data.get("auth") != WEBHOOK_SECRET:
-            return jsonify({"error": "Unauthorized"}), 401
+    # validare secret
+    if data.get("auth") != WEBHOOK_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
 
-        side = data.get("action").upper()      # BUY sau SELL
-        symbol = data.get("symbol")            # ex. ETHUSDTM
-        leverage = str(data.get("leverage", 5))
-        price = data.get("price")
-        tp = data.get("tp")
-        sl = data.get("sl")
+    side = data.get("action").upper()  # BUY sau SELL
+    symbol = data.get("symbol")
+    price = data.get("price")
+    sl = data.get("sl")
+    tp = data.get("tp")
+    qty = data.get("quantity")
+    leverage = data.get("leverage", 5)
 
-        # ======================
-        # Conversie în contracte
-        # ======================
-        contracts_per_coin = {
-            "ETHUSDTM": 0.01,   # 1 contract = 0.01 ETH
-            "XBTUSDTM": 0.001,  # 1 contract = 0.001 BTC
-            "SOLUSDTM": 1,      # 1 contract = 1 SOL
-            "ADAUSDTM": 10,     # 1 contract = 10 ADA
-            "XRPUSDTM": 10,     # 1 contract = 10 XRP
-            "DOGEUSDTM": 100,   # 1 contract = 100 DOGE
-            "PAXGUSDTM": 0.01,  # 1 contract = 0.01 PAXG
-        }
+    print(f"Webhook received: {data}", flush=True)
 
-        qty_input = float(data.get("quantity"))  # ce trimiți tu (în monede)
-        contract_size = contracts_per_coin.get(symbol, 1)  # fallback = 1
-        qty = int(qty_input / contract_size)  # conversie în contracte (integer)
+    # ======================
+    # 4. Setăm leverage
+    # ======================
+    endpoint_leverage = f"/api/v1/position/leverage"
+    lev_body = {"symbol": symbol, "leverage": str(leverage)}
+    headers = get_headers("POST", endpoint_leverage, json.dumps(lev_body))
+    res_lev = requests.post(BASE_URL + endpoint_leverage, headers=headers, data=json.dumps(lev_body))
+    print("Leverage response:", res_lev.text, flush=True)
 
-        print(f"Placing order -> {side} {symbol}, qty_input={qty_input}, contracts={qty}, lev={leverage}, TP={tp}, SL={sl}", flush=True)
+    # ======================
+    # 5. Trimitem ordin principal
+    # ======================
+    endpoint_order = "/api/v1/orders"
+    order_body = {
+        "clientOid": str(uuid.uuid4()),
+        "symbol": symbol,
+        "side": side.lower(),
+        "type": "market",
+        "size": str(qty)
+    }
+    headers = get_headers("POST", endpoint_order, json.dumps(order_body))
+    res_order = requests.post(BASE_URL + endpoint_order, headers=headers, data=json.dumps(order_body))
+    print("Main order response:", res_order.text, flush=True)
 
-        # ======================
-        # 1. Setează leverage
-        # ======================
-        endpoint_lev = "/api/v1/position/setLeverage"
-        lev_body = {"symbol": symbol, "leverage": leverage}
-        headers = get_headers("POST", endpoint_lev, json.dumps(lev_body))
-        res_lev = requests.post(BASE_URL + endpoint_lev, headers=headers, data=json.dumps(lev_body))
-        print("Leverage response:", res_lev.text, flush=True)
+    # ======================
+    # 6. Trimitem TP & SL ca stopOrders
+    # ======================
+    endpoint_stop = "/api/v1/stopOrders"
 
-        # ======================
-        # 2. Creează ordin principal (market)
-        # ======================
-        endpoint_order = "/api/v1/orders"
-        order_body = {
-            "clientOid": str(uuid.uuid4()),   # ID unic necesar
+    if tp:
+        tp_body = {
+            "clientOid": str(uuid.uuid4()),
             "symbol": symbol,
-            "side": side,
+            "side": "sell" if side == "BUY" else "buy",
+            "type": "limit",
+            "stop": "up" if side == "BUY" else "down",
+            "stopPrice": str(tp),
+            "price": str(tp),
+            "reduceOnly": True,
+            "closeOrder": True,
+            "triggerType": "lastPrice"
+        }
+        headers = get_headers("POST", endpoint_stop, json.dumps(tp_body))
+        res_tp = requests.post(BASE_URL + endpoint_stop, headers=headers, data=json.dumps(tp_body))
+        print("TP response:", res_tp.text, flush=True)
+
+    if sl:
+        sl_body = {
+            "clientOid": str(uuid.uuid4()),
+            "symbol": symbol,
+            "side": "sell" if side == "BUY" else "buy",
             "type": "market",
-            "size": qty,
-            "leverage": leverage
+            "stop": "down" if side == "BUY" else "up",
+            "stopPrice": str(sl),
+            "reduceOnly": True,
+            "closeOrder": True,
+            "triggerType": "lastPrice"
         }
-        headers = get_headers("POST", endpoint_order, json.dumps(order_body))
-        res_order = requests.post(BASE_URL + endpoint_order, headers=headers, data=json.dumps(order_body))
-        print("Order response:", res_order.text, flush=True)
+        headers = get_headers("POST", endpoint_stop, json.dumps(sl_body))
+        res_sl = requests.post(BASE_URL + endpoint_stop, headers=headers, data=json.dumps(sl_body))
+        print("SL response:", res_sl.text, flush=True)
 
-        # ======================
-        # 3. Adaugă TP și SL dacă există
-        # ======================
-        if tp:
-            tp_body = {
-                "clientOid": str(uuid.uuid4()),
-                "symbol": symbol,
-                "side": "sell" if side == "BUY" else "buy",
-                "type": "limit",
-                "orderType": "stop_limit",   # <<< pentru TP
-                "size": qty,
-                "stop": "up" if side == "BUY" else "down",
-                "stopPrice": str(tp),
-                "price": str(tp),
-                "reduceOnly": True,
-                "closeOrder": True
-            }
-            headers = get_headers("POST", endpoint_order, json.dumps(tp_body))
-            res_tp = requests.post(BASE_URL + endpoint_order, headers=headers, data=json.dumps(tp_body))
-            print("TP response:", res_tp.text, flush=True)
+    return jsonify({"status": "executed", "symbol": symbol, "side": side, "qty": qty, "sl": sl, "tp": tp})
 
-        if sl:
-            sl_body = {
-                "clientOid": str(uuid.uuid4()),
-                "symbol": symbol,
-                "side": "sell" if side == "BUY" else "buy",
-                "type": "market",
-                "orderType": "stop_market",  # <<< pentru SL
-                "size": qty,
-                "stop": "down" if side == "BUY" else "up",
-                "stopPrice": str(sl),
-                "reduceOnly": True,
-                "closeOrder": True
-            }
-            headers = get_headers("POST", endpoint_order, json.dumps(sl_body))
-            res_sl = requests.post(BASE_URL + endpoint_order, headers=headers, data=json.dumps(sl_body))
-            print("SL response:", res_sl.text, flush=True)
-
-        return jsonify({
-            "status": "executed",
-            "symbol": symbol,
-            "side": side,
-            "contracts": qty,
-            "tp": tp,
-            "sl": sl
-        })
-
-    except Exception as e:
-        print("ERROR:", str(e), flush=True)
-        print(traceback.format_exc(), flush=True)
-        return jsonify({"error": str(e)}), 500
 
 # ======================
-# Pornire server
+# 7. Rulează aplicația
 # ======================
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
