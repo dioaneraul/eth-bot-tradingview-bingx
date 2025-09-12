@@ -107,6 +107,7 @@ def webhook():
                 "symbol": symbol,
                 "side": "sell" if side == "BUY" else "buy",
                 "type": "limit",
+                "orderType": "stop_limit",   # <<< pentru TP
                 "size": qty,
                 "stop": "up" if side == "BUY" else "down",
                 "stopPrice": str(tp),
@@ -124,6 +125,7 @@ def webhook():
                 "symbol": symbol,
                 "side": "sell" if side == "BUY" else "buy",
                 "type": "market",
+                "orderType": "stop_market",  # <<< pentru SL
                 "size": qty,
                 "stop": "down" if side == "BUY" else "up",
                 "stopPrice": str(sl),
