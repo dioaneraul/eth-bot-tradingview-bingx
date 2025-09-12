@@ -2,14 +2,12 @@ import os
 from flask import Flask, request, jsonify
 from kucoin_futures.client import Trade
 
-# ==============================
-#  API KEYS din variabile ENV
-# ==============================
+# API KEYS
 API_KEY = os.getenv("KUCOIN_FUTURES_API_KEY")
 API_SECRET = os.getenv("KUCOIN_FUTURES_API_SECRET")
 API_PASSPHRASE = os.getenv("KUCOIN_FUTURES_API_PASSPHRASE")
 
-# Inițializare client corect (fără is_sandbox)
+# Client KuCoin
 client = Trade(key=API_KEY, secret=API_SECRET, passphrase=API_PASSPHRASE)
 
 app = Flask(__name__)
@@ -20,61 +18,54 @@ def webhook():
     print("Payload primit:", data)
 
     try:
-        action = data.get("action")  # buy / sell
+        action = data.get("action")
         symbol = data.get("symbol", "ETHUSDTM")
-        quantity = data.get("quantity", 1)
-        leverage = data.get("leverage", 5)
-        tp_price = data.get("tp")
-        sl_price = data.get("sl")
+        quantity = float(data.get("quantity", 1))
+        leverage = int(data.get("leverage", 5))
+        tp_price = float(data.get("tp", 0))
+        sl_price = float(data.get("sl", 0))
 
-        # ==============================
-        #   Market Order
-        # ==============================
-        if action.lower() == "buy":
-            side = "buy"
-        elif action.lower() == "sell":
-            side = "sell"
-        else:
-            return jsonify({"error": "Action invalid"}), 400
+        side = "buy" if action.lower() == "buy" else "sell"
 
-        # Plasăm ordinul principal
-        main_order = client.create_market_order(
+        # 1. Market order
+        order = client.create_market_order(
             symbol=symbol,
             side=side,
-            lever=leverage,
+            leverage=leverage,
             size=quantity
         )
-        print("Main order response:", main_order)
+        print("Market order:", order)
 
-        # ==============================
-        #   TP & SL (reduceOnly = True)
-        # ==============================
-        if tp_price:
-            tp_order = client.create_limit_order(
+        # 2. TP și SL
+        if tp_price > 0:
+            tp = client.create_limit_order(
                 symbol=symbol,
                 side="sell" if side == "buy" else "buy",
-                price=str(tp_price),
+                price=tp_price,
+                leverage=leverage,
                 size=quantity,
                 reduceOnly=True
             )
-            print("TP order response:", tp_order)
+            print("Take Profit:", tp)
 
-        if sl_price:
-            sl_order = client.create_stop_order(
+        if sl_price > 0:
+            sl = client.create_stop_order(
                 symbol=symbol,
                 side="sell" if side == "buy" else "buy",
                 stop="down" if side == "buy" else "up",
-                stopPrice=str(sl_price),
+                stopPrice=sl_price,
+                price=sl_price,
+                leverage=leverage,
                 size=quantity,
                 reduceOnly=True
             )
-            print("SL order response:", sl_order)
+            print("Stop Loss:", sl)
 
-        return jsonify({"status": "success"}), 200
+        return jsonify({"msg": "Ordin executat cu succes!"})
 
     except Exception as e:
         print("Eroare:", str(e))
-        return jsonify({"status": "error", "msg": str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == '__main__':
