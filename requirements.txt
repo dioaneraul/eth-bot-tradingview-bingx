@@ -3,3 +3,4 @@ gunicorn
 requests
 kucoin-python
 kucoin-futures-python
+setuptools
