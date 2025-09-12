@@ -1,102 +1,112 @@
+import os
+import time
+import json
+import uuid
+import hmac
+import base64
+import hashlib
+import requests
 from flask import Flask, request, jsonify
-import time, base64, hmac, hashlib, requests, json, os
 
 app = Flask(__name__)
 
-API_KEY = os.environ.get("KUCOIN_FUTURES_API_KEY")
-API_SECRET = os.environ.get("KUCOIN_FUTURES_API_SECRET")
-API_PASSPHRASE = os.environ.get("KUCOIN_FUTURES_API_PASSPHRASE")
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
+# ===== KuCoin API Keys din Render Environment =====
+API_KEY = os.getenv("KUCOIN_FUTURES_API_KEY")
+API_SECRET = os.getenv("KUCOIN_FUTURES_API_SECRET")
+API_PASSPHRASE = os.getenv("KUCOIN_FUTURES_API_PASSPHRASE")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
 BASE_URL = "https://api-futures.kucoin.com"
 
-def get_headers(method, endpoint, body=""):
-    now = str(int(time.time() * 1000))
-    str_to_sign = now + method + endpoint + body
+# ===== Funcție de semnătură =====
+def sign_request(endpoint, method, body=""):
+    now = int(time.time() * 1000)
+    str_to_sign = str(now) + method + endpoint + body
     signature = base64.b64encode(
         hmac.new(API_SECRET.encode(), str_to_sign.encode(), hashlib.sha256).digest()
-    ).decode()
+    )
     passphrase = base64.b64encode(
         hmac.new(API_SECRET.encode(), API_PASSPHRASE.encode(), hashlib.sha256).digest()
-    ).decode()
-    return {
+    )
+    headers = {
         "KC-API-KEY": API_KEY,
-        "KC-API-SIGN": signature,
-        "KC-API-TIMESTAMP": now,
-        "KC-API-PASSPHRASE": passphrase,
+        "KC-API-SIGN": signature.decode(),
+        "KC-API-TIMESTAMP": str(now),
+        "KC-API-PASSPHRASE": passphrase.decode(),
         "KC-API-KEY-VERSION": "2",
         "Content-Type": "application/json"
     }
+    return headers
 
-@app.route('/webhook', methods=['POST'])
+# ===== Webhook Trading =====
+@app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
+    print("Payload primit:", data, flush=True)
 
     if data.get("auth") != WEBHOOK_SECRET:
-        return jsonify({"error": "unauthorized"}), 401
+        return jsonify({"status": "error", "msg": "Unauthorized"}), 401
 
-    side = data.get("action").upper()
     symbol = data.get("symbol")
-    leverage = int(data.get("leverage", 5))
-    price = float(data.get("price", 0))
-    sl = float(data.get("sl", 0))
-    tp = float(data.get("tp", 0))
+    side = data.get("action").lower()  # "buy" sau "sell"
+    qty = float(data.get("quantity"))
+    leverage = int(data.get("leverage"))
+    tp = float(data.get("tp"))
+    sl = float(data.get("sl"))
 
-    # 🔥 Conversie quantity în contracte (integer)
-    raw_qty = float(data.get("quantity", 1))
-    qty = int(raw_qty / 0.01)   # pe KuCoin 1 contract = 0.01 ETH
-
-    # setează levier
-    endpoint_leverage = f"/api/v1/position/leverage"
-    lev_body = json.dumps({"symbol": symbol, "leverage": leverage})
-    res_lev = requests.post(BASE_URL + endpoint_leverage, headers=get_headers("POST", endpoint_leverage, lev_body), data=lev_body)
-
-    # ordinele
+    # ===== Ordin principal (Market) =====
     endpoint_order = "/api/v1/orders"
+    url_order = BASE_URL + endpoint_order
 
-    # ordin principal MARKET
-    main_body = {
+    order_body = {
         "symbol": symbol,
-        "side": side.lower(),
+        "side": side,
         "type": "market",
-        "size": qty
+        "size": qty,
+        "leverage": str(leverage),
+        "clientOid": str(int(time.time() * 1000))
     }
-    res_main = requests.post(BASE_URL + endpoint_order, headers=get_headers("POST", endpoint_order, json.dumps(main_body)), data=json.dumps(main_body))
 
-    # adaugă TP și SL doar dacă au fost trimise
-    tp_res, sl_res = None, None
+    headers = sign_request(endpoint_order, "POST", json.dumps(order_body))
+    res_order = requests.post(url_order, headers=headers, data=json.dumps(order_body))
+    print("Main order response:", res_order.text, flush=True)
 
-    if tp > 0:
-        tp_body = {
-            "symbol": symbol,
-            "side": "sell" if side == "BUY" else "buy",
-            "type": "limit",
-            "price": tp,
-            "size": qty,
-            "reduceOnly": True
-        }
-        tp_res = requests.post(BASE_URL + endpoint_order, headers=get_headers("POST", endpoint_order, json.dumps(tp_body)), data=json.dumps(tp_body))
+    # ===== Take Profit (Limit Order) =====
+    tp_body = {
+        "symbol": symbol,
+        "side": "sell" if side == "buy" else "buy",
+        "type": "limit",
+        "price": tp,
+        "size": qty,
+        "reduceOnly": True,
+        "clientOid": str(int(time.time() * 1000)) + "_tp"
+    }
+    res_tp = requests.post(url_order, headers=sign_request(endpoint_order, "POST", json.dumps(tp_body)),
+                           data=json.dumps(tp_body))
+    print("TP response:", res_tp.text, flush=True)
 
-    if sl > 0:
-        sl_body = {
-            "symbol": symbol,
-            "side": "sell" if side == "BUY" else "buy",
-            "type": "stop_market",
-            "stopPrice": sl,
-            "size": qty,
-            "reduceOnly": True
-        }
-        sl_res = requests.post(BASE_URL + endpoint_order, headers=get_headers("POST", endpoint_order, json.dumps(sl_body)), data=json.dumps(sl_body))
+    # ===== Stop Loss (Stop Order) =====
+    sl_body = {
+        "symbol": symbol,
+        "side": "sell" if side == "buy" else "buy",
+        "type": "stop",
+        "stopPrice": sl,
+        "size": qty,
+        "reduceOnly": True,
+        "clientOid": str(int(time.time() * 1000)) + "_sl"
+    }
+    res_sl = requests.post(url_order, headers=sign_request(endpoint_order, "POST", json.dumps(sl_body)),
+                           data=json.dumps(sl_body))
+    print("SL response:", res_sl.text, flush=True)
 
     return jsonify({
         "status": "executed",
         "symbol": symbol,
         "side": side,
-        "contracts": qty,
-        "tp_response": tp_res.text if tp_res else "no tp",
-        "sl_response": sl_res.text if sl_res else "no sl",
-        "main_response": res_main.text
+        "qty": qty,
+        "tp": tp,
+        "sl": sl
     })
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
