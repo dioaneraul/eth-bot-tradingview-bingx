@@ -1,89 +1,80 @@
 import os
-import time
-import uuid
-import requests
 from flask import Flask, request, jsonify
 from kucoin_futures.client import Trade
 
-app = Flask(__name__)
-
-# ==========================
-# API Keys din Render Env
-# ==========================
+# ==============================
+#  API KEYS din variabile ENV
+# ==============================
 API_KEY = os.getenv("KUCOIN_FUTURES_API_KEY")
 API_SECRET = os.getenv("KUCOIN_FUTURES_API_SECRET")
 API_PASSPHRASE = os.getenv("KUCOIN_FUTURES_API_PASSPHRASE")
 
-client = Trade(key=API_KEY, secret=API_SECRET, passphrase=API_PASSPHRASE, is_sandbox=False)
+# Inițializare client corect (fără is_sandbox)
+client = Trade(key=API_KEY, secret=API_SECRET, passphrase=API_PASSPHRASE)
 
-# ==========================
-# Webhook endpoint
-# ==========================
+app = Flask(__name__)
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.get_json()
+    data = request.json
     print("Payload primit:", data)
 
-    if data.get("auth") != "raulsecret123":
-        return jsonify({"error": "Auth invalid"}), 403
-
-    symbol = data.get("symbol", "ETHUSDTM")
-    side = data.get("action", "buy").upper()  # BUY sau SELL
-    qty = data.get("quantity", 1)
-    leverage = int(data.get("leverage", 5))
-    tp = float(data.get("tp", 0))
-    sl = float(data.get("sl", 0))
-
     try:
-        # ==========================
-        # 1. Buy Market principal
-        # ==========================
-        client.set_leverage(symbol=symbol, leverage=leverage)
-        order_id = str(uuid.uuid4())
-        res = client.create_market_order(
+        action = data.get("action")  # buy / sell
+        symbol = data.get("symbol", "ETHUSDTM")
+        quantity = data.get("quantity", 1)
+        leverage = data.get("leverage", 5)
+        tp_price = data.get("tp")
+        sl_price = data.get("sl")
+
+        # ==============================
+        #   Market Order
+        # ==============================
+        if action.lower() == "buy":
+            side = "buy"
+        elif action.lower() == "sell":
+            side = "sell"
+        else:
+            return jsonify({"error": "Action invalid"}), 400
+
+        # Plasăm ordinul principal
+        main_order = client.create_market_order(
             symbol=symbol,
             side=side,
-            size=qty,
-            clientOid=order_id
+            lever=leverage,
+            size=quantity
         )
-        print("Main order response:", res)
+        print("Main order response:", main_order)
 
-        # ==========================
-        # 2. TP (Sell Limit)
-        # ==========================
-        if tp > 0:
-            tp_id = str(uuid.uuid4())
+        # ==============================
+        #   TP & SL (reduceOnly = True)
+        # ==============================
+        if tp_price:
             tp_order = client.create_limit_order(
                 symbol=symbol,
-                side="sell" if side == "BUY" else "buy",
-                size=qty,
-                price=tp,
-                reduceOnly=True,
-                clientOid=tp_id
+                side="sell" if side == "buy" else "buy",
+                price=str(tp_price),
+                size=quantity,
+                reduceOnly=True
             )
-            print("TP response:", tp_order)
+            print("TP order response:", tp_order)
 
-        # ==========================
-        # 3. SL (Stop Market)
-        # ==========================
-        if sl > 0:
-            sl_id = str(uuid.uuid4())
-            sl_order = client.create_market_order(
+        if sl_price:
+            sl_order = client.create_stop_order(
                 symbol=symbol,
-                side="sell" if side == "BUY" else "buy",
-                size=qty,
-                stop="down" if side == "BUY" else "up",
-                stopPrice=sl,
-                reduceOnly=True,
-                clientOid=sl_id
+                side="sell" if side == "buy" else "buy",
+                stop="down" if side == "buy" else "up",
+                stopPrice=str(sl_price),
+                size=quantity,
+                reduceOnly=True
             )
-            print("SL response:", sl_order)
+            print("SL order response:", sl_order)
 
-        return jsonify({"status": "executed", "symbol": symbol, "side": side, "qty": qty, "tp": tp, "sl": sl})
+        return jsonify({"status": "success"}), 200
 
     except Exception as e:
-        print("Error:", str(e))
-        return jsonify({"error": str(e)}), 500
+        print("Eroare:", str(e))
+        return jsonify({"status": "error", "msg": str(e)}), 500
 
 
 if __name__ == '__main__':
