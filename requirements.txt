@@ -2,3 +2,5 @@ flask
 gunicorn
 requests
 python-kucoin
+kucoin-futures
+
