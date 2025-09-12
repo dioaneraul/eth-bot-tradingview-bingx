@@ -1,101 +1,101 @@
+import os
+import time
+import hmac
+import base64
+import hashlib
+import json
+import requests
 from flask import Flask, request, jsonify
-import time, base64, hmac, hashlib, json, os, requests
 
 app = Flask(__name__)
 
-# Chei API din Render Environment
-API_KEY = os.environ.get("KUCOIN_FUTURES_API_KEY")
-API_SECRET = os.environ.get("KUCOIN_FUTURES_API_SECRET")
-API_PASSPHRASE = os.environ.get("KUCOIN_FUTURES_API_PASSPHRASE")
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
+# Variabile din Render
+API_KEY = os.getenv("KUCOIN_FUTURES_API_KEY")
+API_SECRET = os.getenv("KUCOIN_FUTURES_API_SECRET")
+API_PASSPHRASE = os.getenv("KUCOIN_FUTURES_API_PASSPHRASE")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "raulsecret123")
 
 BASE_URL = "https://api-futures.kucoin.com"
 
-def get_headers(method, endpoint, body=""):
-    now = str(int(time.time() * 1000))
-    str_to_sign = now + method + endpoint + body
+
+def sign_request(method, endpoint, body=""):
+    now = int(time.time() * 1000)
+    str_to_sign = str(now) + method + endpoint + body
     signature = base64.b64encode(
-        hmac.new(API_SECRET.encode(), str_to_sign.encode(), hashlib.sha256).digest()
-    ).decode()
-
+        hmac.new(API_SECRET.encode("utf-8"), str_to_sign.encode("utf-8"), hashlib.sha256).digest()
+    )
     passphrase = base64.b64encode(
-        hmac.new(API_SECRET.encode(), API_PASSPHRASE.encode(), hashlib.sha256).digest()
-    ).decode()
+        hmac.new(API_SECRET.encode("utf-8"), API_PASSPHRASE.encode("utf-8"), hashlib.sha256).digest()
+    )
+    return now, signature.decode(), passphrase.decode()
 
-    return {
+
+def place_order(symbol, side, size, leverage=5, order_type="market", price=None, reduce_only=False):
+    endpoint = "/api/v1/orders"
+    url = BASE_URL + endpoint
+
+    body = {
+        "symbol": symbol,
+        "side": side,
+        "type": order_type,
+        "leverage": str(leverage),
+        "size": str(size),
+    }
+
+    if price:
+        body["price"] = str(price)
+    if reduce_only:
+        body["reduceOnly"] = True
+
+    body_json = json.dumps(body)
+    now, signature, passphrase = sign_request("POST", endpoint, body_json)
+
+    headers = {
         "KC-API-KEY": API_KEY,
         "KC-API-SIGN": signature,
-        "KC-API-TIMESTAMP": now,
+        "KC-API-TIMESTAMP": str(now),
         "KC-API-PASSPHRASE": passphrase,
         "KC-API-KEY-VERSION": "2",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
 
-@app.route('/webhook', methods=['POST'])
+    r = requests.post(url, headers=headers, data=body_json)
+    return r.json()
+
+
+@app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json()
+    data = request.json
+    if not data or data.get("auth") != WEBHOOK_SECRET:
+        return jsonify({"error": "Unauthorized"}), 403
 
-    # verifică secret
-    if data.get("auth") != WEBHOOK_SECRET:
-        return jsonify({"error": "Unauthorized"}), 401
+    symbol = data.get("symbol", "ETHUSDTM")
+    side = data.get("action", "buy")
+    qty = str(data.get("quantity", 1))  # contracte
+    lev = data.get("leverage", 5)
+    tp = data.get("tp")
+    sl = data.get("sl")
 
-    side = data.get("action").upper()   # BUY / SELL
-    symbol = data.get("symbol")
-    qty = str(data.get("quantity"))     # contracte
-    leverage = str(data.get("leverage"))
-    tp = str(data.get("tp"))
-    sl = str(data.get("sl"))
+    # 1. Plasăm ordinul principal Market
+    main_order = place_order(symbol, side, qty, lev, "market")
+    print("Main order response:", main_order, flush=True)
 
-    print(f"Payload primit: {data}", flush=True)
+    if "orderId" not in main_order.get("data", {}):
+        return jsonify({"error": "Main order failed", "response": main_order}), 400
 
-    # === ORDIN PRINCIPAL (MARKET) ===
-    endpoint = "/api/v1/orders"
-    method = "POST"
-    headers = get_headers(method, endpoint)
+    # 2. TP și SL (reduceOnly)
+    opposite_side = "sell" if side == "buy" else "buy"
 
-    main_order = {
-        "symbol": symbol,
-        "side": side.lower(),          # buy / sell
-        "type": "market",
-        "size": qty,
-        "leverage": leverage,
-        "clientOid": str(int(time.time() * 1000)) + "_main"
-    }
+    if tp:
+        tp_order = place_order(symbol, opposite_side, qty, lev, "limit", price=tp, reduce_only=True)
+        print("TP response:", tp_order, flush=True)
 
-    res_main = requests.post(BASE_URL + endpoint, headers=headers, data=json.dumps(main_order))
-    print("Main order response:", res_main.text, flush=True)
-
-    # Dacă ordinul principal merge → trimitem TP & SL
-    if res_main.status_code == 200:
-        opposite_side = "sell" if side == "BUY" else "buy"
-
-        # === Take Profit ===
-        tp_order = {
-            "symbol": symbol,
-            "side": opposite_side,
-            "type": "limit",
-            "price": tp,
-            "size": qty,
-            "reduceOnly": True,
-            "clientOid": str(int(time.time() * 1000)) + "_tp"
-        }
-        res_tp = requests.post(BASE_URL + endpoint, headers=headers, data=json.dumps(tp_order))
-        print("TP response:", res_tp.text, flush=True)
-
-        # === Stop Loss ===
-        sl_order = {
-            "symbol": symbol,
-            "side": opposite_side,
-            "type": "stop_market",
-            "stopPrice": sl,
-            "size": qty,
-            "reduceOnly": True,
-            "clientOid": str(int(time.time() * 1000)) + "_sl"
-        }
-        res_sl = requests.post(BASE_URL + endpoint, headers=headers, data=json.dumps(sl_order))
-        print("SL response:", res_sl.text, flush=True)
+    if sl:
+        sl_order = place_order(symbol, opposite_side, qty, lev, "stop_market", price=sl, reduce_only=True)
+        print("SL response:", sl_order, flush=True)
 
     return jsonify({"status": "executed", "symbol": symbol, "side": side, "qty": qty, "tp": tp, "sl": sl})
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
