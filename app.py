@@ -1,83 +1,83 @@
+import os
+import time
+import hmac
+import base64
+import hashlib
+import json
+import requests
 from flask import Flask, request, jsonify
-import time, base64, hmac, hashlib, requests, json, os
 
 app = Flask(__name__)
 
-API_KEY = os.environ.get("KUCOIN_FUTURES_API_KEY")
-API_SECRET = os.environ.get("KUCOIN_FUTURES_API_SECRET")
-API_PASSPHRASE = os.environ.get("KUCOIN_FUTURES_API_PASSPHRASE")
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
+# KuCoin API Keys din Environment Variables (Render → Environment)
+API_KEY = os.getenv("KUCOIN_FUTURES_API_KEY")
+API_SECRET = os.getenv("KUCOIN_FUTURES_API_SECRET")
+API_PASSPHRASE = os.getenv("KUCOIN_FUTURES_API_PASSPHRASE")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
 BASE_URL = "https://api-futures.kucoin.com"
 
-
+# ========= Funcție pentru semnătură =========
 def get_headers(method, endpoint, body=""):
-    now = str(int(time.time() * 1000))
-    str_to_sign = now + method + endpoint + body
+    now = int(time.time() * 1000)
+    str_to_sign = str(now) + method + endpoint + body
     signature = base64.b64encode(
-        hmac.new(API_SECRET.encode(), str_to_sign.encode(), hashlib.sha256).digest()
-    ).decode()
-
+        hmac.new(API_SECRET.encode("utf-8"), str_to_sign.encode("utf-8"), hashlib.sha256).digest()
+    )
     passphrase = base64.b64encode(
-        hmac.new(API_SECRET.encode(), API_PASSPHRASE.encode(), hashlib.sha256).digest()
-    ).decode()
+        hmac.new(API_SECRET.encode("utf-8"), API_PASSPHRASE.encode("utf-8"), hashlib.sha256).digest()
+    )
 
     return {
-        "KC-API-KEY": API_KEY,
         "KC-API-SIGN": signature,
-        "KC-API-TIMESTAMP": now,
+        "KC-API-TIMESTAMP": str(now),
+        "KC-API-KEY": API_KEY,
         "KC-API-PASSPHRASE": passphrase,
         "KC-API-KEY-VERSION": "2",
         "Content-Type": "application/json"
     }
 
-
+# ========= Endpoint Webhook =========
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.get_json()
+    data = request.json
+    print("Payload primit:", data, flush=True)
 
     if data.get("auth") != WEBHOOK_SECRET:
         return jsonify({"error": "Unauthorized"}), 401
 
-    side = data.get("action").lower()  # buy / sell
-    symbol = data.get("symbol")        # ex: ETHUSDTM
-    size = int(data.get("size"))       # număr contracte (NU quantity!)
-    leverage = str(data.get("leverage", 5))
+    side = data.get("action", "").lower()  # buy sau sell
+    symbol = data.get("symbol", "ETHUSDTM")
+    qty = float(data.get("quantity", 0))
+    leverage = int(data.get("leverage", 5))
     tp = float(data.get("tp", 0))
     sl = float(data.get("sl", 0))
 
-    # ===== Set Leverage =====
-    endpoint_leverage = f"/api/v1/position/leverage"
-    leverage_body = json.dumps({
-        "symbol": symbol,
-        "leverage": leverage
-    })
-    headers = get_headers("POST", endpoint_leverage, leverage_body)
-    res_leverage = requests.post(BASE_URL + endpoint_leverage, headers=headers, data=leverage_body)
-    print("Leverage response:", res_leverage.text, flush=True)
-
-    # ===== Main Market Order =====
+    # ========= Plasare ordin principal =========
     endpoint_order = "/api/v1/orders"
-    order_body = json.dumps({
+    main_body = json.dumps({
         "symbol": symbol,
         "side": side,
         "type": "market",
-        "size": size,
+        "size": qty,
         "leverage": leverage,
-        "clientOid": str(int(time.time() * 1000))
+        "clientOid": str(int(time.time() * 1000)) + "_main"
     })
-    headers = get_headers("POST", endpoint_order, order_body)
-    res_order = requests.post(BASE_URL + endpoint_order, headers=headers, data=order_body)
-    print("Main order response:", res_order.text, flush=True)
 
-    # ===== TP Order =====
+    headers = get_headers("POST", endpoint_order, main_body)
+    res_main = requests.post(BASE_URL + endpoint_order, headers=headers, data=main_body)
+    print("Main order response:", res_main.text, flush=True)
+
+    # ========= Plasare TP =========
     if tp > 0:
         tp_body = json.dumps({
             "symbol": symbol,
             "side": "sell" if side == "buy" else "buy",
             "type": "limit",
             "price": tp,
-            "size": size,
+            "stop": "up" if side == "buy" else "down",
+            "stopPrice": tp,
+            "size": qty,
             "reduceOnly": True,
             "clientOid": str(int(time.time() * 1000)) + "_tp"
         })
@@ -85,14 +85,16 @@ def webhook():
         res_tp = requests.post(BASE_URL + endpoint_order, headers=headers, data=tp_body)
         print("TP response:", res_tp.text, flush=True)
 
-    # ===== SL Order =====
+    # ========= Plasare SL =========
     if sl > 0:
         sl_body = json.dumps({
             "symbol": symbol,
             "side": "sell" if side == "buy" else "buy",
-            "type": "stop",
+            "type": "limit",
+            "price": sl,
+            "stop": "down" if side == "buy" else "up",
             "stopPrice": sl,
-            "size": size,
+            "size": qty,
             "reduceOnly": True,
             "clientOid": str(int(time.time() * 1000)) + "_sl"
         })
@@ -100,15 +102,7 @@ def webhook():
         res_sl = requests.post(BASE_URL + endpoint_order, headers=headers, data=sl_body)
         print("SL response:", res_sl.text, flush=True)
 
-    return jsonify({
-        "status": "executed",
-        "symbol": symbol,
-        "side": side,
-        "size": size,
-        "tp": tp,
-        "sl": sl
-    })
-
+    return jsonify({"status": "executed", "symbol": symbol, "side": side, "qty": qty, "tp": tp, "sl": sl})
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
