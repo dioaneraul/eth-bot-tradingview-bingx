@@ -10,28 +10,24 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
 
 BASE_URL = "https://api-futures.kucoin.com"
 
-# ---------------- AUTH HEADERS ---------------- #
 def get_headers(method, endpoint, body=""):
-    now = int(time.time() * 1000)
-    str_to_sign = str(now) + method + endpoint + body
+    now = str(int(time.time() * 1000))
+    str_to_sign = now + method + endpoint + body
     signature = base64.b64encode(
         hmac.new(API_SECRET.encode(), str_to_sign.encode(), hashlib.sha256).digest()
     ).decode()
-
     passphrase = base64.b64encode(
         hmac.new(API_SECRET.encode(), API_PASSPHRASE.encode(), hashlib.sha256).digest()
     ).decode()
-
     return {
         "KC-API-KEY": API_KEY,
         "KC-API-SIGN": signature,
-        "KC-API-TIMESTAMP": str(now),
+        "KC-API-TIMESTAMP": now,
         "KC-API-PASSPHRASE": passphrase,
         "KC-API-KEY-VERSION": "2",
         "Content-Type": "application/json"
     }
 
-# ---------------- WEBHOOK ---------------- #
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.get_json()
@@ -39,77 +35,68 @@ def webhook():
     if data.get("auth") != WEBHOOK_SECRET:
         return jsonify({"error": "unauthorized"}), 401
 
-    side = data.get("action").lower()  # buy / sell
-    symbol = data.get("symbol", "ETHUSDTM")
-    leverage = str(data.get("leverage", 5))
-    qty = str(data.get("quantity", 0.01))
+    side = data.get("action").upper()
+    symbol = data.get("symbol")
+    leverage = int(data.get("leverage", 5))
+    price = float(data.get("price", 0))
+    sl = float(data.get("sl", 0))
+    tp = float(data.get("tp", 0))
 
-    price = data.get("price")  # dacă e None → market
-    sl = data.get("sl")        # Stop Loss
-    tp = data.get("tp")        # Take Profit
+    # 🔥 Conversie quantity în contracte (integer)
+    raw_qty = float(data.get("quantity", 1))
+    qty = int(raw_qty / 0.01)   # pe KuCoin 1 contract = 0.01 ETH
 
-    # ------------ ORDER CREATION ------------ #
-    order = {
+    # setează levier
+    endpoint_leverage = f"/api/v1/position/leverage"
+    lev_body = json.dumps({"symbol": symbol, "leverage": leverage})
+    res_lev = requests.post(BASE_URL + endpoint_leverage, headers=get_headers("POST", endpoint_leverage, lev_body), data=lev_body)
+
+    # ordinele
+    endpoint_order = "/api/v1/orders"
+
+    # ordin principal MARKET
+    main_body = {
         "symbol": symbol,
-        "side": side,
-        "type": "market" if price is None else "limit",
-        "size": qty,
-        "leverage": leverage
+        "side": side.lower(),
+        "type": "market",
+        "size": qty
     }
+    res_main = requests.post(BASE_URL + endpoint_order, headers=get_headers("POST", endpoint_order, json.dumps(main_body)), data=json.dumps(main_body))
 
-    if price is not None:
-        order["price"] = str(price)
+    # adaugă TP și SL doar dacă au fost trimise
+    tp_res, sl_res = None, None
 
-    endpoint = "/api/v1/orders"
-    url = BASE_URL + endpoint
-    headers = get_headers("POST", endpoint, json.dumps(order))
-    res = requests.post(url, headers=headers, data=json.dumps(order))
-    print("Main order response:", res.text, flush=True)
-
-    if res.status_code != 200:
-        return jsonify({"error": "main_order_failed", "details": res.text}), 400
-
-    res_json = res.json()
-    order_id = res_json.get("data", {}).get("orderId")
-
-    if not order_id:
-        return jsonify({"error": "no_order_id", "details": res.text}), 400
-
-    # ------------ TP / SL ORDERS ------------ #
-    if sl:
-        sl_order = {
+    if tp > 0:
+        tp_body = {
             "symbol": symbol,
-            "side": "sell" if side == "buy" else "buy",
-            "type": "stop_market",
-            "stop": "loss",
-            "stopPrice": str(sl),
+            "side": "sell" if side == "BUY" else "buy",
+            "type": "limit",
+            "price": tp,
             "size": qty,
             "reduceOnly": True
         }
-        res_sl = requests.post(BASE_URL + "/api/v1/orders", headers=get_headers("POST", "/api/v1/orders", json.dumps(sl_order)), data=json.dumps(sl_order))
-        print("SL response:", res_sl.text, flush=True)
+        tp_res = requests.post(BASE_URL + endpoint_order, headers=get_headers("POST", endpoint_order, json.dumps(tp_body)), data=json.dumps(tp_body))
 
-    if tp:
-        tp_order = {
+    if sl > 0:
+        sl_body = {
             "symbol": symbol,
-            "side": "sell" if side == "buy" else "buy",
+            "side": "sell" if side == "BUY" else "buy",
             "type": "stop_market",
-            "stop": "entry",
-            "stopPrice": str(tp),
+            "stopPrice": sl,
             "size": qty,
             "reduceOnly": True
         }
-        res_tp = requests.post(BASE_URL + "/api/v1/orders", headers=get_headers("POST", "/api/v1/orders", json.dumps(tp_order)), data=json.dumps(tp_order))
-        print("TP response:", res_tp.text, flush=True)
+        sl_res = requests.post(BASE_URL + endpoint_order, headers=get_headers("POST", endpoint_order, json.dumps(sl_body)), data=json.dumps(sl_body))
 
     return jsonify({
         "status": "executed",
         "symbol": symbol,
         "side": side,
-        "qty": qty,
-        "tp": tp,
-        "sl": sl
+        "contracts": qty,
+        "tp_response": tp_res.text if tp_res else "no tp",
+        "sl_response": sl_res.text if sl_res else "no sl",
+        "main_response": res_main.text
     })
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
