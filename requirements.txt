@@ -1,5 +1,5 @@
 flask
 gunicorn
 requests
-kucoin-futures
 kucoin-python
+kucoin-futures-python
