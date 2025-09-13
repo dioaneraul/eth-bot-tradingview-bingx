@@ -72,9 +72,10 @@ def webhook():
                 sl_order = client.create_limit_order(
                     symbol=symbol,
                     side="sell" if side == "buy" else "buy",
-                    price=str(sl_price),  # ⚠️ unele SDK-uri cer același preț ca stopPrice
-                    stop="down" if side == "buy" else "up",
+                    price=str(sl_price),   # uneori obligatoriu = stopPrice
+                    stop="loss",
                     stopPrice=str(sl_price),
+                    stopPriceType="TP",    # ✅ "TP" = Last Price
                     size=quantity,
                     lever=str(leverage),
                     reduceOnly=True
