@@ -2,14 +2,10 @@ import os
 from flask import Flask, request, jsonify
 from kucoin_futures.client import Trade
 
-# ==============================
-# API KEYS din Environment
-# ==============================
 API_KEY = os.getenv("KUCOIN_FUTURES_API_KEY")
 API_SECRET = os.getenv("KUCOIN_FUTURES_API_SECRET")
 API_PASSPHRASE = os.getenv("KUCOIN_FUTURES_API_PASSPHRASE")
 
-# Init KuCoin client
 client = Trade(key=API_KEY, secret=API_SECRET, passphrase=API_PASSPHRASE)
 
 app = Flask(__name__)
@@ -23,18 +19,20 @@ def webhook():
         action = data.get("action")  # "buy" sau "sell"
         symbol = data.get("symbol", "ETHUSDTM")
         quantity = float(data.get("quantity", 1))
-        lever = int(data.get("leverage", 5))   # <-- aici folosim lever, nu leverage
+        lever = int(data.get("leverage", 5))
 
         side = "buy" if action.lower() == "buy" else "sell"
+        positionSide = "long" if side == "buy" else "short"
 
         # ==============================
-        # Market Order simplu
+        # Market Order cu positionSide
         # ==============================
         order = client.create_market_order(
             symbol=symbol,
             side=side,
-            lever=lever,     # <-- corect
-            size=quantity
+            lever=lever,
+            size=quantity,
+            positionSide=positionSide   # <-- aici e fixul
         )
 
         print("Ordin executat:", order)
