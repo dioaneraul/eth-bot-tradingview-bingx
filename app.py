@@ -43,7 +43,7 @@ def webhook():
             symbol=symbol,
             side=side,
             size=quantity,
-            lever=str(leverage)   # ✅ necesar în SDK-ul tău
+            lever=str(leverage)
         )
         print("Ordin Market executat:", order)
 
@@ -65,19 +65,18 @@ def webhook():
                 print("Eroare TP:", e)
 
         # ==========================
-        # Stop Loss
+        # Stop Loss (STOP-MARKET)
         # ==========================
         if sl_price > 0:
             try:
-                sl_order = client.create_limit_order(
+                sl_order = client.create_market_order(
                     symbol=symbol,
                     side="sell" if side == "buy" else "buy",
-                    price=str(sl_price),   # uneori obligatoriu = stopPrice
-                    stop="loss",
-                    stopPrice=str(sl_price),
-                    stopPriceType="TP",    # ✅ "TP" = Last Price
                     size=quantity,
                     lever=str(leverage),
+                    stop="loss",
+                    stopPrice=str(sl_price),
+                    stopPriceType="TP",
                     reduceOnly=True
                 )
                 print("Ordin SL creat:", sl_order)
