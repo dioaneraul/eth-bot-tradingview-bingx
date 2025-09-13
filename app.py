@@ -23,7 +23,7 @@ def webhook():
         action = data.get("action")  # "buy" sau "sell"
         symbol = data.get("symbol", "ETHUSDTM")
         quantity = float(data.get("quantity", 1))
-        leverage = int(data.get("leverage", 5))
+        lever = int(data.get("leverage", 5))   # <-- aici folosim lever, nu leverage
 
         side = "buy" if action.lower() == "buy" else "sell"
 
@@ -33,7 +33,7 @@ def webhook():
         order = client.create_market_order(
             symbol=symbol,
             side=side,
-            leverage=leverage,
+            lever=lever,     # <-- corect
             size=quantity
         )
 
