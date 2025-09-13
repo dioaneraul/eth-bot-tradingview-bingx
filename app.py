@@ -65,13 +65,14 @@ def webhook():
                 print("Eroare TP:", e)
 
         # ==========================
-        # Stop Loss (STOP-MARKET)
+        # Stop Loss (corect cu create_order)
         # ==========================
         if sl_price > 0:
             try:
-                sl_order = client.create_market_order(
+                sl_order = client.create_order(
                     symbol=symbol,
                     side="sell" if side == "buy" else "buy",
+                    type="market",
                     size=quantity,
                     lever=str(leverage),
                     stop="loss",
