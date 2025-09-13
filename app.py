@@ -30,19 +30,24 @@ def webhook():
         side = "buy" if action.lower() == "buy" else "sell"
 
         # ======================
-        # 1. Market order
+        # 1. Setăm margin mode și leverage
+        # ======================
+        client.change_margin_mode(symbol=symbol, marginMode="isolated")
+        client.change_leverage(symbol=symbol, leverage=lever)
+
+        # ======================
+        # 2. Market order
         # ======================
         order = client.create_market_order(
             symbol=symbol,
             side=side,
             lever=lever,
-            size=quantity,
-            marginMode="isolated"
+            size=quantity
         )
         print("Market order executat:", order)
 
         # ======================
-        # 2. Stop Loss și Take Profit
+        # 3. Stop Loss și Take Profit
         # ======================
         if tp_price > 0:
             tp_order = client.create_stop_order(
