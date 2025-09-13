@@ -30,10 +30,17 @@ def webhook():
         side = "buy" if action.lower() == "buy" else "sell"
 
         # ======================
-        # 1. Setăm margin mode și leverage
+        # 1. Setăm margin mode și leverage via API direct
         # ======================
-        client.change_margin_mode(symbol=symbol, marginMode="isolated")
-        client.change_leverage(symbol=symbol, leverage=lever)
+        client._request('POST', '/api/v1/marginMode/change', params={
+            "symbol": symbol,
+            "marginMode": "isolated"
+        })
+
+        client._request('POST', '/api/v1/position/leverage', params={
+            "symbol": symbol,
+            "leverage": lever
+        })
 
         # ======================
         # 2. Market order
