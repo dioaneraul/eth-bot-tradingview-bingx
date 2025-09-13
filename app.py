@@ -22,17 +22,15 @@ def webhook():
         lever = int(data.get("leverage", 5))
 
         side = "buy" if action.lower() == "buy" else "sell"
-        positionSide = "long" if side == "buy" else "short"
 
         # ==============================
-        # Market Order cu positionSide
+        # Market Order corect KuCoin
         # ==============================
         order = client.create_market_order(
             symbol=symbol,
             side=side,
             lever=lever,
-            size=quantity,
-            positionSide=positionSide   # <-- aici e fixul
+            size=quantity
         )
 
         print("Ordin executat:", order)
