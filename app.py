@@ -38,21 +38,23 @@ def _signed_headers(method: str, endpoint: str, body_str: str):
         "Content-Type": "application/json"
     }
 
-def place_conditional_order(symbol, side, order_type, price, size, stop_price=None, stop_type=None):
+def place_conditional_order(symbol, side, order_type, price, size, leverage, stop_price=None, stop_type=None):
     payload = {
         "symbol": symbol,
         "side": side,
         "type": order_type,        # "limit" sau "market"
-        "size": str(int(size)),    # FIX: KuCoin cere int, nu float
+        "size": str(int(size)),    # KuCoin cere int, nu float
         "reduceOnly": True,
         "closeOrder": True,
+        "leverage": str(leverage),     # FIX: leverage corect
+        "marginMode": "isolated",      # FIX: isolated
         "clientOid": str(uuid.uuid4())
     }
     if price:
         payload["price"] = str(price)
     if stop_price:
         payload["stopPrice"] = str(stop_price)
-        payload["stopPriceType"] = "MP"   # Mark Price
+        payload["stopPriceType"] = "MP"
         payload["stop"] = stop_type
 
     endpoint = "/api/v1/orders"
@@ -82,11 +84,18 @@ def webhook():
 
         side = "buy" if action.lower() == "buy" else "sell"
 
+        # 0) Curățare ordine vechi (TP/SL rămase)
+        try:
+            cancel_result = client.cancel_all_limit_order(symbol=symbol)
+            print("Ordine vechi anulate:", cancel_result)
+        except Exception as e:
+            print("Eroare anulare ordine vechi:", e)
+
         # 1) Market order (SDK)
         order = client.create_market_order(
             symbol=symbol,
             side=side,
-            size=str(int(quantity)),   # FIX size
+            size=str(int(quantity)),
             lever=str(leverage)
         )
         print("Ordin Market executat:", order)
@@ -96,7 +105,7 @@ def webhook():
             try:
                 tp_side = "sell" if side == "buy" else "buy"
                 tp_order = place_conditional_order(
-                    symbol, tp_side, "limit", tp_price, quantity
+                    symbol, tp_side, "limit", tp_price, quantity, leverage
                 )
                 print("Ordin TP creat:", tp_order)
             except Exception as e:
@@ -108,7 +117,7 @@ def webhook():
                 sl_side = "sell" if side == "buy" else "buy"
                 stop_type = "down" if side == "buy" else "up"
                 sl_order = place_conditional_order(
-                    symbol, sl_side, "market", None, quantity,
+                    symbol, sl_side, "market", None, quantity, leverage,
                     stop_price=sl_price, stop_type=stop_type
                 )
                 print("Ordin SL creat:", sl_order)
