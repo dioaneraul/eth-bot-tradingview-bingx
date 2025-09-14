@@ -82,22 +82,14 @@ def webhook():
 
         side = "buy" if action.lower() == "buy" else "sell"
 
-        # 0) Setăm margin mode + leverage pentru simbol
-        try:
-            client.change_margin_mode(symbol, "ISOLATED")
-            client.set_leverage(symbol, str(leverage), "ISOLATED")
-            print(f"{symbol}: Isolated {leverage}x setat")
-        except Exception as e:
-            print("Eroare setare margin/leverage:", e)
-
-        # 1) Curățare ordine vechi (TP/SL rămase)
+        # 1) Curățare ordine vechi
         try:
             cancel_result = client.cancel_all_limit_order(symbol=symbol)
             print("Ordine vechi anulate:", cancel_result)
         except Exception as e:
             print("Eroare anulare ordine vechi:", e)
 
-        # 2) Market order (SDK)
+        # 2) Market order (intrare poziție)
         order = client.create_market_order(
             symbol=symbol,
             side=side,
@@ -106,7 +98,7 @@ def webhook():
         )
         print("Ordin Market executat:", order)
 
-        # 3) Take Profit (conditional limit)
+        # 3) Take Profit (limit reduceOnly)
         if tp_price > 0:
             try:
                 tp_side = "sell" if side == "buy" else "buy"
@@ -117,7 +109,7 @@ def webhook():
             except Exception as e:
                 print("Eroare TP:", e)
 
-        # 4) Stop Loss (conditional market)
+        # 4) Stop Loss (market reduceOnly)
         if sl_price > 0:
             try:
                 sl_side = "sell" if side == "buy" else "buy"
@@ -129,6 +121,16 @@ def webhook():
                 print("Ordin SL creat:", sl_order)
             except Exception as e:
                 print("Eroare SL:", e)
+
+        # 5) Cleanup dacă poziția e deja închisă (anulează ordinele rămase)
+        try:
+            pos = client.get_position_details(symbol)
+            size_pos = float(pos.get("currentQty", 0))
+            if size_pos == 0:
+                cancel_result = client.cancel_all_limit_order(symbol=symbol)
+                print("Poziție închisă → ordine rămase anulate:", cancel_result)
+        except Exception as e:
+            print("Eroare verificare poziție:", e)
 
         return jsonify({"success": True, "market_order": order})
 
