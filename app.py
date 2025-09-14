@@ -1,7 +1,7 @@
 import os
 import uuid
 from flask import Flask, request, jsonify
-from kucoin_futures.client import Trade   # <<< librăria corectă pentru kucoin-futures-python
+from kucoin_futures.client import Trade   # din librăria kucoin-futures-python==1.0.9
 
 # ==========================
 #  API KEYS din Render
@@ -78,7 +78,7 @@ def webhook():
         if sl_price > 0:
             try:
                 stop_type = "down" if side == "buy" else "up"
-                sl_order = client.create_order(
+                sl_order = client.create_stop_order(
                     symbol=symbol,
                     side="sell" if side == "buy" else "buy",
                     type="market",
