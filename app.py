@@ -12,9 +12,8 @@ BASE_URL = "https://api-futures.kucoin.com"
 client = Trade(key=API_KEY, secret=API_SECRET, passphrase=API_PASSPHRASE, is_sandbox=False)
 app = Flask(__name__)
 
-def _signed_headers(method: str, endpoint: str, body: dict | None):
+def _signed_headers(method: str, endpoint: str, body_str: str):
     now = str(int(time.time() * 1000))
-    body_str = json.dumps(body, separators=(',', ':'), ensure_ascii=False) if body else ""
     msg = f"{now}{method}{endpoint}{body_str}"
     sign = base64.b64encode(hmac.new(API_SECRET.encode(), msg.encode(), hashlib.sha256).digest()).decode()
     pph = base64.b64encode(hmac.new(API_SECRET.encode(), API_PASSPHRASE.encode(), hashlib.sha256).digest()).decode()
@@ -24,27 +23,31 @@ def _signed_headers(method: str, endpoint: str, body: dict | None):
         "KC-API-TIMESTAMP": now,
         "KC-API-PASSPHRASE": pph,
         "KC-API-KEY-VERSION": "2",
-        "Content-Type": "application/json",
+        "Content-Type": "application/json"
     }
 
-def place_stop_loss(symbol: str, side: str, size: float, stop_price: float):
-    # side = 'sell' for long SL, 'buy' for short SL
-    stop = "down" if side == "sell" else "up"  # dacă vindem (SL pt long) -> down; dacă cumpărăm (SL pt short) -> up
+def place_conditional_order(symbol, side, order_type, price, size, stop_price=None, stop_type=None):
     payload = {
         "symbol": symbol,
         "side": side,
-        "type": "market",
+        "type": order_type,         # "limit" sau "market"
         "size": str(size),
-        "stop": stop,
-        "stopPrice": str(stop_price),
-        "stopPriceType": "MP",      # sau "TP" (Last/Transaction Price); MP e mai robust
         "reduceOnly": True,
         "closeOrder": True,
         "clientOid": str(uuid.uuid4())
     }
+    if price:
+        payload["price"] = str(price)
+    if stop_price:
+        payload["stopPrice"] = str(stop_price)
+        payload["stopPriceType"] = "MP"
+        payload["stop"] = stop_type
+
     endpoint = "/api/v1/orders"
-    _, headers = _signed_headers("POST", endpoint, payload)
-    r = requests.post(BASE_URL + endpoint, headers=headers, data=json.dumps(payload))
+    body_str = json.dumps(payload, separators=(',', ':'), ensure_ascii=False)
+    now, headers = _signed_headers("POST", endpoint, body_str)
+    r = requests.post(BASE_URL + endpoint, headers=headers, data=body_str)
+    print("Conditional Order Response:", r.text)
     return r.json()
 
 @app.route("/webhook", methods=["POST"])
@@ -55,7 +58,7 @@ def webhook():
         return jsonify({"error": "Unauthorized"}), 403
 
     try:
-        action   = data.get("action")           # "buy" / "sell"
+        action   = data.get("action")        # buy/sell
         symbol   = data.get("symbol", "ETHUSDTM")
         quantity = float(data.get("quantity", 1))
         leverage = int(data.get("leverage", 5))
@@ -68,33 +71,27 @@ def webhook():
         order = client.create_market_order(symbol=symbol, side=side, size=quantity, lever=str(leverage))
         print("Ordin Market executat:", order)
 
-        # 2) Take Profit (SDK – reduceOnly + closeOrder)
+        # 2) Take Profit (conditional limit)
         if tp_price > 0:
             try:
-                tp_order = client.create_limit_order(
-                    symbol=symbol,
-                    side="sell" if side == "buy" else "buy",
-                    price=str(tp_price),
-                    size=quantity,
-                    lever=str(leverage),
-                    reduceOnly=True,
-                    closeOrder=True,
-                    clientOid=str(uuid.uuid4())
-                )
+                tp_side = "sell" if side == "buy" else "buy"
+                tp_order = place_conditional_order(symbol, tp_side, "limit", tp_price, quantity)
                 print("Ordin TP creat:", tp_order)
             except Exception as e:
                 print("Eroare TP:", e)
 
-        # 3) Stop Loss (REST semnat corect)
+        # 3) Stop Loss (conditional market)
         if sl_price > 0:
             try:
                 sl_side = "sell" if side == "buy" else "buy"
-                sl_order = place_stop_loss(symbol, sl_side, quantity, sl_price)
+                stop_type = "down" if side == "buy" else "up"
+                sl_order = place_conditional_order(symbol, sl_side, "market", None, quantity, stop_price=sl_price, stop_type=stop_type)
                 print("Ordin SL creat:", sl_order)
             except Exception as e:
                 print("Eroare SL:", e)
 
         return jsonify({"success": True, "market_order": order})
+
     except Exception as e:
         print("Eroare la executie:", e)
         return jsonify({"error": str(e)}), 500
