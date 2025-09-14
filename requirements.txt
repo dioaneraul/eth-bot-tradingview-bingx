@@ -1,5 +1,6 @@
 flask==2.3.2
 gunicorn==20.1.0
 requests==2.31.0
-kucoin-futures==1.0.10
+kucoin-python==1.0.11
+kucoin-futures-python==1.0.9
 setuptools==68.2.2
