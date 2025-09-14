@@ -1,7 +1,7 @@
 import os
 import uuid
 from flask import Flask, request, jsonify
-from kucoin.futures.client import Trade
+from kucoin_futures.client import Trade
 
 # ==========================
 #  API KEYS din Render
