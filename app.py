@@ -1,39 +1,61 @@
-import os
-import uuid
+import os, uuid, time, hmac, base64, hashlib, json, requests
 from flask import Flask, request, jsonify
-from kucoin_futures.client import Trade   # din librăria kucoin-futures-python==1.0.9
+from kucoin_futures.client import Trade
 
-# ==========================
-#  API KEYS din Render
-# ==========================
 API_KEY = os.getenv("KUCOIN_FUTURES_API_KEY")
 API_SECRET = os.getenv("KUCOIN_FUTURES_API_SECRET")
 API_PASSPHRASE = os.getenv("KUCOIN_FUTURES_API_PASSPHRASE")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "raulsecret123")
 
-# Client KuCoin Futures
-client = Trade(
-    key=API_KEY,
-    secret=API_SECRET,
-    passphrase=API_PASSPHRASE,
-    is_sandbox=False
-)
+BASE_URL = "https://api-futures.kucoin.com"
 
-# Flask app
+client = Trade(key=API_KEY, secret=API_SECRET, passphrase=API_PASSPHRASE, is_sandbox=False)
 app = Flask(__name__)
 
+def _signed_headers(method: str, endpoint: str, body: dict | None):
+    now = str(int(time.time() * 1000))
+    body_str = json.dumps(body, separators=(',', ':'), ensure_ascii=False) if body else ""
+    msg = f"{now}{method}{endpoint}{body_str}"
+    sign = base64.b64encode(hmac.new(API_SECRET.encode(), msg.encode(), hashlib.sha256).digest()).decode()
+    pph = base64.b64encode(hmac.new(API_SECRET.encode(), API_PASSPHRASE.encode(), hashlib.sha256).digest()).decode()
+    return now, {
+        "KC-API-KEY": API_KEY,
+        "KC-API-SIGN": sign,
+        "KC-API-TIMESTAMP": now,
+        "KC-API-PASSPHRASE": pph,
+        "KC-API-KEY-VERSION": "2",
+        "Content-Type": "application/json",
+    }
+
+def place_stop_loss(symbol: str, side: str, size: float, stop_price: float):
+    # side = 'sell' for long SL, 'buy' for short SL
+    stop = "down" if side == "sell" else "up"  # dacă vindem (SL pt long) -> down; dacă cumpărăm (SL pt short) -> up
+    payload = {
+        "symbol": symbol,
+        "side": side,
+        "type": "market",
+        "size": str(size),
+        "stop": stop,
+        "stopPrice": str(stop_price),
+        "stopPriceType": "MP",      # sau "TP" (Last/Transaction Price); MP e mai robust
+        "reduceOnly": True,
+        "closeOrder": True,
+        "clientOid": str(uuid.uuid4())
+    }
+    endpoint = "/api/v1/orders"
+    _, headers = _signed_headers("POST", endpoint, payload)
+    r = requests.post(BASE_URL + endpoint, headers=headers, data=json.dumps(payload))
+    return r.json()
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
     print("Payload primit:", data)
-
     if data.get("auth") != WEBHOOK_SECRET:
         return jsonify({"error": "Unauthorized"}), 403
 
     try:
-        # Extragem parametrii
-        action   = data.get("action")        # buy / sell
+        action   = data.get("action")           # "buy" / "sell"
         symbol   = data.get("symbol", "ETHUSDTM")
         quantity = float(data.get("quantity", 1))
         leverage = int(data.get("leverage", 5))
@@ -42,20 +64,11 @@ def webhook():
 
         side = "buy" if action.lower() == "buy" else "sell"
 
-        # ==========================
-        # Ordin Market principal
-        # ==========================
-        order = client.create_market_order(
-            symbol=symbol,
-            side=side,
-            size=quantity,
-            lever=str(leverage)
-        )
+        # 1) Market order (SDK)
+        order = client.create_market_order(symbol=symbol, side=side, size=quantity, lever=str(leverage))
         print("Ordin Market executat:", order)
 
-        # ==========================
-        # Take Profit (Conditional)
-        # ==========================
+        # 2) Take Profit (SDK – reduceOnly + closeOrder)
         if tp_price > 0:
             try:
                 tp_order = client.create_limit_order(
@@ -72,37 +85,19 @@ def webhook():
             except Exception as e:
                 print("Eroare TP:", e)
 
-        # ==========================
-        # Stop Loss (Conditional)
-        # ==========================
+        # 3) Stop Loss (REST semnat corect)
         if sl_price > 0:
             try:
-                stop_type = "down" if side == "buy" else "up"
-                sl_order = client.create_stop_order(
-                    symbol=symbol,
-                    side="sell" if side == "buy" else "buy",
-                    type="market",
-                    stop=stop_type,
-                    stopPrice=str(sl_price),
-                    stopPriceType="MP",  # MP = Mark Price
-                    size=quantity,
-                    reduceOnly=True,
-                    closeOrder=True,
-                    clientOid=str(uuid.uuid4())
-                )
+                sl_side = "sell" if side == "buy" else "buy"
+                sl_order = place_stop_loss(symbol, sl_side, quantity, sl_price)
                 print("Ordin SL creat:", sl_order)
             except Exception as e:
                 print("Eroare SL:", e)
 
         return jsonify({"success": True, "market_order": order})
-
     except Exception as e:
         print("Eroare la executie:", e)
         return jsonify({"error": str(e)}), 500
 
-
-# ==========================
-# Pornire server Flask
-# ==========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
