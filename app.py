@@ -31,7 +31,7 @@ def webhook():
     try:
         action   = data.get("action")        # buy / sell
         symbol   = data.get("symbol", "ETHUSDTM")
-        quantity = float(data.get("quantity", 1))
+        quantity = float(data.get("quantity", 0.01))  # ETH
         leverage = str(data.get("leverage", 5))
         tp_price = float(data.get("tp", 0))
         sl_price = float(data.get("sl", 0))
@@ -40,12 +40,20 @@ def webhook():
         side = "buy" if action.lower() == "buy" else "sell"
 
         # ==============================
+        # Conversie ETH → contracte
+        # 1 contract ETHUSDTM = 0.01 ETH
+        # ==============================
+        contracts = int(quantity * 100)  # ex: 0.01 ETH → 1 contract
+        if contracts < 1:
+            return jsonify({"error": "Quantity prea mică pentru 1 contract"}), 400
+
+        # ==============================
         # 1. Market Order Principal
         # ==============================
         order = client.create_market_order(
             symbol=symbol,
             side=side,
-            size=quantity,
+            size=contracts,
             lever=leverage
         )
         print("Ordin Market executat:", order)
@@ -57,8 +65,8 @@ def webhook():
             try:
                 oco_order = client.create_stop_order(
                     symbol=symbol,
-                    side="sell" if side == "buy" else "buy",  # invers pentru închidere
-                    size=quantity,
+                    side="sell" if side == "buy" else "buy",
+                    size=contracts,
                     lever=leverage,
                     stop="down" if side == "buy" else "up",
                     stopPrice=str(sl_price),
@@ -66,7 +74,7 @@ def webhook():
                     reduceOnly=True,
                     closeOrder=True,
                     clientOid=str(uuid.uuid4()),
-                    tpPrice=str(tp_price)   # preț Take Profit
+                    tpPrice=str(tp_price)
                 )
                 print("Ordin OCO (TP+SL) creat:", oco_order)
             except Exception as e:
