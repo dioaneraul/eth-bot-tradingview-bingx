@@ -17,6 +17,13 @@ client = Trade(key=API_KEY, secret=API_SECRET, passphrase=API_PASSPHRASE)
 app = Flask(__name__)
 
 # ==============================
+# Healthcheck (test GET /)
+# ==============================
+@app.route("/", methods=["GET"])
+def index():
+    return "KuCoin TradingView Bot - LIVE"
+
+# ==============================
 # Funcție semnătură pentru REST
 # ==============================
 def _signed_headers(method: str, endpoint: str, body_str: str):
@@ -40,7 +47,7 @@ def set_margin_mode(symbol, leverage, mode="ISOLATED"):
     payload = {
         "symbol": symbol,
         "leverage": str(leverage),
-        "marginMode": mode  # ISOLATED sau CROSS
+        "marginMode": mode
     }
     endpoint = "/api/v1/position/margin/setting"
     body_str = json.dumps(payload, separators=(',', ':'), ensure_ascii=False)
@@ -102,7 +109,7 @@ def webhook():
         if contracts < 1:
             return jsonify({"error": "Quantity prea mică pentru 1 contract"}), 400
 
-        # 1. Set Margin Mode -> Isolated cu leverage trimis de TradingView
+        # 1. Set Margin Mode
         try:
             margin_resp = set_margin_mode(symbol, leverage, mode="ISOLATED")
             print("Margin mode setat:", margin_resp)
@@ -150,10 +157,3 @@ def webhook():
     except Exception as e:
         print("Eroare execuție:", e)
         return jsonify({"error": str(e)}), 500
-
-# ==============================
-# Run Flask
-# ==============================
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
