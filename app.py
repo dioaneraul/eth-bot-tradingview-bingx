@@ -33,12 +33,31 @@ def _signed_headers(method: str, endpoint: str, body_str: str):
         "Content-Type": "application/json"
     }
 
+# ==============================
+# Setare Margin Mode (Cross/Isolated)
+# ==============================
+def set_margin_mode(symbol, leverage, mode="ISOLATED"):
+    payload = {
+        "symbol": symbol,
+        "leverage": str(leverage),
+        "marginMode": mode  # ISOLATED sau CROSS
+    }
+    endpoint = "/api/v1/position/margin/setting"
+    body_str = json.dumps(payload, separators=(',', ':'), ensure_ascii=False)
+    _, headers = _signed_headers("POST", endpoint, body_str)
+    r = requests.post(BASE_URL + endpoint, headers=headers, data=body_str)
+    print("Set Margin Mode Response:", r.text)
+    return r.json()
+
+# ==============================
+# Conditional Orders (TP/SL)
+# ==============================
 def place_conditional_order(symbol, side, order_type, price, size, stop_price=None, stop_type=None):
     payload = {
         "symbol": symbol,
         "side": side,
-        "type": order_type,        # "limit" sau "market"
-        "size": str(int(size)),    # KuCoin cere întreg
+        "type": order_type,
+        "size": str(int(size)),
         "reduceOnly": True,
         "closeOrder": True,
         "clientOid": str(uuid.uuid4())
@@ -47,7 +66,7 @@ def place_conditional_order(symbol, side, order_type, price, size, stop_price=No
         payload["price"] = str(price)
     if stop_price:
         payload["stopPrice"] = str(stop_price)
-        payload["stopPriceType"] = "MP"   # Mark Price
+        payload["stopPriceType"] = "MP"
         payload["stop"] = stop_type
 
     endpoint = "/api/v1/orders"
@@ -69,79 +88,62 @@ def webhook():
         return jsonify({"error": "Unauthorized"}), 403
 
     try:
-        action   = data.get("action")        # buy / sell
+        action   = data.get("action")
         symbol   = data.get("symbol", "ETHUSDTM")
-        quantity = float(data.get("quantity", 0.01))  # ETH
-        leverage = str(data.get("leverage", 5))
+        quantity = float(data.get("quantity", 0.01))
+        leverage = int(data.get("leverage", 5))
         tp_price = float(data.get("tp", 0))
         sl_price = float(data.get("sl", 0))
 
         side = "buy" if action.lower() == "buy" else "sell"
 
-        # Conversie ETH → contracte (1 contract = 0.01 ETH)
+        # Conversie (1 contract = 0.01 coin)
         contracts = int(quantity * 100)
         if contracts < 1:
             return jsonify({"error": "Quantity prea mică pentru 1 contract"}), 400
 
-        # ==============================
-        # 1. Anulare ordine vechi
-        # ==============================
+        # 1. Set Margin Mode -> Isolated cu leverage trimis de TradingView
+        try:
+            margin_resp = set_margin_mode(symbol, leverage, mode="ISOLATED")
+            print("Margin mode setat:", margin_resp)
+        except Exception as e:
+            print("Eroare setare margin mode:", e)
+
+        # 2. Anulare ordine vechi
         try:
             cancel_result = client.cancel_all_limit_order(symbol=symbol)
             print("Ordine vechi anulate:", cancel_result)
         except Exception as e:
             print("Eroare anulare ordine vechi:", e)
 
-        # ==============================
-        # 2. Market Order
-        # ==============================
+        # 3. Market Order
         order = client.create_market_order(
             symbol=symbol,
             side=side,
             size=contracts,
-            lever=leverage
+            lever=str(leverage)
         )
         print("Ordin Market executat:", order)
 
-        # ==============================
-        # 3. Take Profit (limit reduceOnly)
-        # ==============================
+        # 4. Take Profit
         if tp_price > 0:
             try:
                 tp_side = "sell" if side == "buy" else "buy"
-                tp_order = place_conditional_order(
-                    symbol, tp_side, "limit", tp_price, contracts
-                )
+                tp_order = place_conditional_order(symbol, tp_side, "limit", tp_price, contracts)
                 print("Ordin TP creat:", tp_order)
             except Exception as e:
                 print("Eroare TP:", e)
 
-        # ==============================
-        # 4. Stop Loss (market reduceOnly)
-        # ==============================
+        # 5. Stop Loss
         if sl_price > 0:
             try:
                 sl_side = "sell" if side == "buy" else "buy"
                 stop_type = "down" if side == "buy" else "up"
-                sl_order = place_conditional_order(
-                    symbol, sl_side, "market", None, contracts,
-                    stop_price=sl_price, stop_type=stop_type
-                )
+                sl_order = place_conditional_order(symbol, sl_side, "market", None, contracts,
+                                                   stop_price=sl_price, stop_type=stop_type)
                 print("Ordin SL creat:", sl_order)
             except Exception as e:
                 print("Eroare SL:", e)
-
-        # ==============================
-        # 5. Cleanup după închidere
-        # ==============================
-        try:
-            pos = client.get_position_details(symbol)
-            size_pos = float(pos.get("currentQty", 0))
-            if size_pos == 0:
-                cancel_result = client.cancel_all_limit_order(symbol=symbol)
-                print("Poziție închisă → ordine rămase anulate:", cancel_result)
-        except Exception as e:
-            print("Eroare verificare poziție:", e)
 
         return jsonify({"success": True, "market_order": order})
 
@@ -153,5 +155,5 @@ def webhook():
 # Run Flask
 # ==============================
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))  # Render alocă automat PORT
+    port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
