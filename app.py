@@ -2,9 +2,6 @@ import os, uuid, time, hmac, base64, hashlib, json, requests
 from flask import Flask, request, jsonify
 from kucoin_futures.client import Trade
 
-# ==============================
-# API KEYS din Render (Environment Variables)
-# ==============================
 API_KEY = os.getenv("KUCOIN_FUTURES_API_KEY")
 API_SECRET = os.getenv("KUCOIN_FUTURES_API_SECRET")
 API_PASSPHRASE = os.getenv("KUCOIN_FUTURES_API_PASSPHRASE")
@@ -16,16 +13,10 @@ client = Trade(key=API_KEY, secret=API_SECRET, passphrase=API_PASSPHRASE)
 
 app = Flask(__name__)
 
-# ==============================
-# Healthcheck (test GET /)
-# ==============================
 @app.route("/", methods=["GET"])
 def index():
     return "KuCoin TradingView Bot - LIVE"
 
-# ==============================
-# Funcție semnătură pentru REST
-# ==============================
 def _signed_headers(method: str, endpoint: str, body_str: str):
     now = str(int(time.time() * 1000))
     msg = f"{now}{method}{endpoint}{body_str}"
@@ -40,9 +31,6 @@ def _signed_headers(method: str, endpoint: str, body_str: str):
         "Content-Type": "application/json"
     }
 
-# ==============================
-# Setare Margin Mode (Cross/Isolated)
-# ==============================
 def set_margin_mode(symbol, leverage, mode="ISOLATED"):
     payload = {
         "symbol": symbol,
@@ -56,9 +44,6 @@ def set_margin_mode(symbol, leverage, mode="ISOLATED"):
     print("Set Margin Mode Response:", r.text)
     return r.json()
 
-# ==============================
-# Conditional Orders (TP/SL)
-# ==============================
 def place_conditional_order(symbol, side, order_type, price, size, stop_price=None, stop_type=None):
     payload = {
         "symbol": symbol,
@@ -83,9 +68,6 @@ def place_conditional_order(symbol, side, order_type, price, size, stop_price=No
     print("Conditional Order Response:", r.text)
     return r.json()
 
-# ==============================
-# Webhook TradingView
-# ==============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
@@ -97,33 +79,35 @@ def webhook():
     try:
         action   = data.get("action")
         symbol   = data.get("symbol", "ETHUSDTM")
-        quantity = float(data.get("quantity", 0.01))
         leverage = int(data.get("leverage", 5))
         tp_price = float(data.get("tp", 0))
         sl_price = float(data.get("sl", 0))
 
+        # Accepta 'contracts' sau fallback pe 'quantity'
+        contracts = data.get("contracts")
+        if contracts is None:
+            quantity = float(data.get("quantity", 0.01))
+            contracts = int(quantity)
+
+        if contracts < 1:
+            return jsonify({
+                "error": "Cantitate prea mică. Trimite minim 1 contract. Poți seta 'contracts': 1 în alerta TradingView."
+            }), 400
+
         side = "buy" if action.lower() == "buy" else "sell"
 
-        # Conversie (1 contract = 0.01 coin)
-        contracts = int(quantity * 100)
-        if contracts < 1:
-            return jsonify({"error": "Quantity prea mică pentru 1 contract"}), 400
-
-        # 1. Set Margin Mode
         try:
             margin_resp = set_margin_mode(symbol, leverage, mode="ISOLATED")
             print("Margin mode setat:", margin_resp)
         except Exception as e:
             print("Eroare setare margin mode:", e)
 
-        # 2. Anulare ordine vechi
         try:
             cancel_result = client.cancel_all_limit_order(symbol=symbol)
             print("Ordine vechi anulate:", cancel_result)
         except Exception as e:
             print("Eroare anulare ordine vechi:", e)
 
-        # 3. Market Order
         order = client.create_market_order(
             symbol=symbol,
             side=side,
@@ -132,7 +116,6 @@ def webhook():
         )
         print("Ordin Market executat:", order)
 
-        # 4. Take Profit
         if tp_price > 0:
             try:
                 tp_side = "sell" if side == "buy" else "buy"
@@ -141,7 +124,6 @@ def webhook():
             except Exception as e:
                 print("Eroare TP:", e)
 
-        # 5. Stop Loss
         if sl_price > 0:
             try:
                 sl_side = "sell" if side == "buy" else "buy"
