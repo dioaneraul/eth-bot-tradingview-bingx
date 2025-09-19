@@ -1,14 +1,20 @@
-import os, uuid, time, hmac, base64, hashlib, json, requests
+import os
+import uuid
+import time
+import hmac
+import base64
+import hashlib
+import json
+import requests
 from flask import Flask, request, jsonify
 from kucoin_futures.client import Trade
 
-# === SETĂRI API ===
 API_KEY = os.getenv("KUCOIN_FUTURES_API_KEY")
 API_SECRET = os.getenv("KUCOIN_FUTURES_API_SECRET")
 API_PASSPHRASE = os.getenv("KUCOIN_FUTURES_API_PASSPHRASE")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "raulsecret123")
-BASE_URL = "https://api-futures.kucoin.com"
 
+BASE_URL = "https://api-futures.kucoin.com"
 client = Trade(key=API_KEY, secret=API_SECRET, passphrase=API_PASSPHRASE)
 
 app = Flask(__name__)
@@ -17,7 +23,6 @@ app = Flask(__name__)
 def index():
     return "KuCoin TradingView Bot - LIVE"
 
-# === HEADERE SEMNATE PENTRU ORDINE CONDITII ===
 def _signed_headers(method: str, endpoint: str, body_str: str):
     now = str(int(time.time() * 1000))
     msg = f"{now}{method}{endpoint}{body_str}"
@@ -32,7 +37,19 @@ def _signed_headers(method: str, endpoint: str, body_str: str):
         "Content-Type": "application/json"
     }
 
-# === ORDIN CONDIȚIONAL (TP/SL) ===
+def set_margin_mode(symbol, leverage, mode="ISOLATED"):
+    payload = {
+        "symbol": symbol,
+        "leverage": str(leverage),
+        "marginMode": mode
+    }
+    endpoint = "/api/v1/position/margin/setting"
+    body_str = json.dumps(payload, separators=(',', ':'), ensure_ascii=False)
+    _, headers = _signed_headers("POST", endpoint, body_str)
+    r = requests.post(BASE_URL + endpoint, headers=headers, data=body_str)
+    print("Set Margin Mode Response:", r.text)
+    return r.json()
+
 def place_conditional_order(symbol, side, order_type, price, size, stop_price=None, stop_type=None):
     payload = {
         "symbol": symbol,
@@ -44,9 +61,9 @@ def place_conditional_order(symbol, side, order_type, price, size, stop_price=No
         "clientOid": str(uuid.uuid4())
     }
     if price:
-        payload["price"] = str(price)
+        payload["price"] = f"{float(price):.2f}"
     if stop_price:
-        payload["stopPrice"] = str(stop_price)
+        payload["stopPrice"] = f"{float(stop_price):.2f}"
         payload["stopPriceType"] = "MP"
         payload["stop"] = stop_type
 
@@ -57,7 +74,6 @@ def place_conditional_order(symbol, side, order_type, price, size, stop_price=No
     print("Conditional Order Response:", r.text)
     return r.json()
 
-# === RUTĂ PRINCIPALĂ – EXECUȚIE ORDIN ===
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
@@ -66,14 +82,16 @@ def webhook():
     if data.get("auth") != WEBHOOK_SECRET:
         return jsonify({"error": "Unauthorized"}), 403
 
-    try:
-        action   = data.get("action")
-        symbol   = data.get("symbol", "ETHUSDTM")
-        leverage = int(data.get("leverage", 5))
-        tp_price = float(data.get("tp", 0))
-        sl_price = float(data.get("sl", 0))
+    def round_price(value, step=0.01):
+        return round(round(value / step) * step, 2)
 
-        # Acceptă 'contracts' sau 'quantity'
+    try:
+        action = data.get("action")
+        symbol = data.get("symbol", "ETHUSDM")
+        leverage = int(data.get("leverage", 5))
+        tp_price = round_price(float(data.get("tp", 0)))
+        sl_price = round_price(float(data.get("sl", 0)))
+
         contracts = data.get("contracts")
         if contracts is None:
             quantity = float(data.get("quantity", 0.01))
@@ -81,19 +99,23 @@ def webhook():
 
         if contracts < 1:
             return jsonify({
-                "error": "Cantitate prea mică. Trimite minim 1 contract. Poți seta 'contracts': 1 în alerta TradingView."
+                "error": "Trimite minim 1 contract. Poți seta 'contracts': 1 în alerta TradingView."
             }), 400
 
         side = "buy" if action.lower() == "buy" else "sell"
 
-        # === Anulează ordine vechi
+        try:
+            margin_resp = set_margin_mode(symbol, leverage, mode="ISOLATED")
+            print("Margin mode setat:", margin_resp)
+        except Exception as e:
+            print("Eroare setare margin mode:", e)
+
         try:
             cancel_result = client.cancel_all_limit_order(symbol=symbol)
             print("Ordine vechi anulate:", cancel_result)
         except Exception as e:
             print("Eroare anulare ordine vechi:", e)
 
-        # === Execută ordin market
         order = client.create_market_order(
             symbol=symbol,
             side=side,
@@ -102,7 +124,6 @@ def webhook():
         )
         print("Ordin Market executat:", order)
 
-        # === TP
         if tp_price > 0:
             try:
                 tp_side = "sell" if side == "buy" else "buy"
@@ -111,7 +132,6 @@ def webhook():
             except Exception as e:
                 print("Eroare TP:", e)
 
-        # === SL
         if sl_price > 0:
             try:
                 sl_side = "sell" if side == "buy" else "buy"
