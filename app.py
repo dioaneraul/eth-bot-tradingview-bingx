@@ -7,7 +7,7 @@ import hashlib
 import json
 import requests
 from flask import Flask, request, jsonify
-from kucoin_futures.client import Trade
+from kucoin_futures.client import Trade, Market
 
 API_KEY = os.getenv("KUCOIN_FUTURES_API_KEY")
 API_SECRET = os.getenv("KUCOIN_FUTURES_API_SECRET")
@@ -16,6 +16,7 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "raulsecret123")
 
 BASE_URL = "https://api-futures.kucoin.com"
 client = Trade(key=API_KEY, secret=API_SECRET, passphrase=API_PASSPHRASE)
+market_client = Market()
 
 app = Flask(__name__)
 
@@ -38,17 +39,22 @@ def _signed_headers(method: str, endpoint: str, body_str: str):
     }
 
 def set_margin_mode(symbol, leverage, mode="ISOLATED"):
-    payload = {
-        "symbol": symbol,
-        "leverage": str(leverage),
-        "marginMode": mode
-    }
-    endpoint = "/api/v1/position/margin/setting"
-    body_str = json.dumps(payload, separators=(',', ':'), ensure_ascii=False)
-    _, headers = _signed_headers("POST", endpoint, body_str)
-    r = requests.post(BASE_URL + endpoint, headers=headers, data=body_str)
-    print("Set Margin Mode Response:", r.text)
-    return r.json()
+    try:
+        payload = {
+            "symbol": symbol,
+            "leverage": str(leverage),
+            "marginMode": mode
+        }
+        endpoint = "/api/v1/position/margin/setting"
+        body_str = json.dumps(payload, separators=(',', ':'), ensure_ascii=False)
+        _, headers = _signed_headers("POST", endpoint, body_str)
+        time.sleep(0.3)
+        r = requests.post(BASE_URL + endpoint, headers=headers, data=body_str)
+        print("Set Margin Mode Response:", r.text)
+        return r.json()
+    except Exception as e:
+        print("Set Margin Mode Exception:", e)
+        return {}
 
 def place_conditional_order(symbol, side, order_type, price, size, stop_price=None, stop_type=None):
     payload = {
@@ -70,6 +76,7 @@ def place_conditional_order(symbol, side, order_type, price, size, stop_price=No
     endpoint = "/api/v1/orders"
     body_str = json.dumps(payload, separators=(',', ':'), ensure_ascii=False)
     _, headers = _signed_headers("POST", endpoint, body_str)
+    time.sleep(0.3)
     r = requests.post(BASE_URL + endpoint, headers=headers, data=body_str)
     print("Conditional Order Response:", r.text)
     return r.json()
@@ -110,12 +117,14 @@ def webhook():
         except Exception as e:
             print("Eroare setare margin mode:", e)
 
+        time.sleep(0.3)
         try:
             cancel_result = client.cancel_all_limit_order(symbol=symbol)
             print("Ordine vechi anulate:", cancel_result)
         except Exception as e:
             print("Eroare anulare ordine vechi:", e)
 
+        time.sleep(0.3)
         order = client.create_market_order(
             symbol=symbol,
             side=side,
